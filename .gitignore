@@ -1,0 +1,11 @@
+.plan/
+node_modules/
+dist/
+# 用户数据目录与测试产物不进版本控制
+sworks-data/
+sworks-*/
+!sworks-*.md
+test-results/
+playwright-report/
+.tmp/
+*.log

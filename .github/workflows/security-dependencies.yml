@@ -1,0 +1,32 @@
+name: Patched dependencies
+on:
+  push:
+    paths: ['.github/workflows/security-dependencies.yml']
+    branches: ['feat/mvp-v0.1']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sworks-dependencies
+          run-id: 36095148270
+          github-token: ${{ github.token }}
+      - name: Upgrade development dependency to security patch
+        run: |
+          mkdir workspace && tar -xzf sworks-dependencies.tar.gz -C workspace
+          cd workspace
+          npm install --save-dev --save-exact vitest@4.1.11
+          npm audit --json > audit.json
+          tar -czf ../sworks-patched-dependencies.tar.gz package.json package-lock.json node_modules audit.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sworks-patched-dependencies
+          path: sworks-patched-dependencies.tar.gz
+          retention-days: 1

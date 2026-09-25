@@ -4,12 +4,15 @@ on:
     paths: ['.github/workflows/security-dependencies.yml']
     branches: ['feat/mvp-v0.1']
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   dependencies:
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/mvp-v0.1
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16.0'
@@ -20,13 +23,24 @@ jobs:
           github-token: ${{ github.token }}
       - name: Upgrade development dependency to security patch
         run: |
+          npm install -g npm@11.6.2
           mkdir workspace && tar -xzf sworks-dependencies.tar.gz -C workspace
           cd workspace
           rm -rf node_modules package-lock.json
-          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json')); p.private = true; p.devDependencies.vitest = '4.1.11'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
+          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json')); p.private = true; delete p.license; p.engines={node:'>=22.16.0 <23 || >=24 <25'}; p.devDependencies.vitest = '4.1.11'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
           npm install
           npm audit --json > audit.json
           tar -czf ../sworks-patched-dependencies.tar.gz package.json package-lock.json node_modules audit.json
+          cp package-lock.json ../package-lock.json
+          cd ..
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package-lock.json
+          git commit -m 'chore: lock audited MVP dependencies'
+          git push origin HEAD:feat/mvp-v0.1
+      - name: Resolver diagnostics
+        if: failure()
+        run: tail -100 ~/.npm/_logs/*debug* || true
       - uses: actions/upload-artifact@v4
         with:
           name: sworks-patched-dependencies

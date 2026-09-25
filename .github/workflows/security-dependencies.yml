@@ -22,6 +22,7 @@ jobs:
         run: |
           mkdir workspace && tar -xzf sworks-dependencies.tar.gz -C workspace
           cd workspace
+          rm -rf node_modules
           npm install --save-dev --save-exact vitest@4.1.11
           npm audit --json > audit.json
           tar -czf ../sworks-patched-dependencies.tar.gz package.json package-lock.json node_modules audit.json

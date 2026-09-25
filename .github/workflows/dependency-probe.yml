@@ -1,0 +1,29 @@
+name: Dependency probe
+on:
+  push:
+    paths: ['.github/workflows/dependency-probe.yml']
+    branches: ['feat/mvp-v0.1']
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Resolve stable packages and verify native SQLite
+        run: |
+          mkdir workspace && cd workspace
+          npm init -y
+          npm pkg set type=module name=sworks version=0.1.0 private=true
+          npm install --save-exact react react-dom hono @hono/node-server better-sqlite3 zod @uiw/react-codemirror @codemirror/lang-markdown react-markdown remark-gfm remark-math rehype-katex rehype-callouts katex unified remark-parse unist-util-visit ipaddr.js sharp yazl yauzl proper-lockfile lucide-react
+          npm install --save-dev --save-exact typescript vite@6 @vitejs/plugin-react@4 tailwindcss @tailwindcss/vite tsx vitest@3 @playwright/test @types/node@22 @types/react @types/react-dom @types/better-sqlite3 @types/yazl @types/yauzl @types/proper-lockfile
+          node --input-type=module -e "import D from 'better-sqlite3'; const d = new D(':memory:'); console.log(d.prepare('select sqlite_version() as version').get()); d.close();"
+          npm audit --json > audit.json || true
+          tar -czf ../sworks-dependencies.tar.gz package.json package-lock.json node_modules audit.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sworks-dependencies
+          path: sworks-dependencies.tar.gz
+          retention-days: 1

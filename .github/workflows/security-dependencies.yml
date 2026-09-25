@@ -22,8 +22,9 @@ jobs:
         run: |
           mkdir workspace && tar -xzf sworks-dependencies.tar.gz -C workspace
           cd workspace
-          rm -rf node_modules
-          npm install --save-dev --save-exact vitest@4.1.11
+          rm -rf node_modules package-lock.json
+          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json')); p.private = true; p.devDependencies.vitest = '4.1.11'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
+          npm install
           npm audit --json > audit.json
           tar -czf ../sworks-patched-dependencies.tar.gz package.json package-lock.json node_modules audit.json
       - uses: actions/upload-artifact@v4

@@ -1,0 +1,33 @@
+name: Bootstrap development dependencies
+on:
+  push:
+    branches: [feat/mvp-workbench]
+    paths: [.github/workflows/bootstrap.yml]
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Resolve supported stable dependencies and lock exact versions
+        run: |
+          mkdir -p bootstrap
+          cd bootstrap
+          npm init -y
+          npm pkg set type=module
+          npm install --save-exact hono@4 @hono/node-server@1 better-sqlite3@12 react@19 react-dom@19 zod@4 react-markdown@10 remark-gfm@4 remark-math@6 rehype-katex@7 rehype-callouts@2 @uiw/react-codemirror@4 @codemirror/lang-markdown@6 @codemirror/view@6 unified@11 remark-parse@11 unist-util-visit@5 ipaddr.js@2 yauzl@3 yazl@3 proper-lockfile@4
+          npm install --save-dev --save-exact typescript@5 vite@7 @vitejs/plugin-react@5 vitest@3 @playwright/test@1 @types/node@22 @types/react@19 @types/react-dom@19 @types/better-sqlite3@7 @types/yauzl@2 @types/yazl@2 @types/proper-lockfile@4 tailwindcss@4 @tailwindcss/vite@4
+          node --version > environment.txt
+          npm --version >> environment.txt
+          npm ls --depth=0 >> environment.txt
+          npm audit --json > npm-audit.json || true
+          tar -czf ../sworks-dependencies.tgz node_modules package.json package-lock.json environment.txt npm-audit.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sworks-development-dependencies
+          path: sworks-dependencies.tgz
+          retention-days: 1

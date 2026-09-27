@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-SworkS is a single-user, local-only workbench for collecting and organising exam problems (题目) and source materials (资料). One Node process serves the API, the attachments and the built React UI, bound to 127.0.0.1. User-facing text, docs and code comments are in Chinese; keep them that way.
+SworkS is a single-user, local-only tutor workbench (家教工作台) for collecting and organising exam problems (题目) and source materials (资料), classifying them with custom properties (题型, 难度, the 考点 tree…) and nested `/` tags, and logging students' attempts (学生 + 作答流水). One Node process serves the API, the attachments and the built React UI, bound to 127.0.0.1. User-facing text, docs and code comments are in Chinese; keep them that way.
 
 Read these before non-trivial changes:
 - `docs/architecture.md`: runtime, data model, save model, remote images, search, backup/restore, security and frontend structure, plus the design trade-offs.
@@ -36,9 +36,12 @@ Server code compiles with NodeNext ESM, so relative imports need `.js` extension
   - Updates require `expectedVersion`; a mismatch returns 409.
   - A real change bumps `write_version`/`updated_at`; a no-op save must not.
   - Notes omitted from a save are soft-deleted.
-  - Nothing is ever hard-deleted, and attachments are never garbage-collected.
+  - `properties` in a save is optional (omitted = untouched); when present, omitted live properties are cleared. Archived / non-applicable property values stay frozen.
+  - Nothing is ever hard-deleted, and attachments are never garbage-collected. (Only exception: unreferenced tag rows after a tag delete in 数据管理.)
+- **Batch and management ops** (`services/batch.ts`, `taxonomy.ts`, `properties.ts`) that change a problem/material must bump `write_version` + `updated_at` and `reindex()` for each really changed item in the same transaction, so stale editors get 409 instead of writing old tags/values back. Option rename/move only reindexes. Student attempts (`services/students.ts`) never bump the problem version.
 - **Search index.** `search_index` is derived and excluded from backups. Call `reindex()` inside the same write transaction.
-- **Schema changes.** Never edit released migrations such as `schema-v1.ts`. A schema change also means updating `RECORD_TABLES`, the backup format version and the restore path (see the checklist in `docs/development.md`).
+- **Schema changes.** Never edit released migrations (`schema-v1.ts`, `schema-v2.ts`, `schema-v3.ts`). A schema change also means a new frozen `RECORD_TABLES_Vn`, a `BACKUP_VERSIONS` row and a backup format version bump (see the checklist in `docs/development.md`). Restore builds the backup's schema version first, inserts, then migrates, so old backups stay restorable.
+- **List filters** are encoded/decoded only by `src/shared/listFilters.ts` (used by both the URL and the server). Tag hierarchy is derived from names via `src/shared/tagPath.ts`; always compare tags with `tagKey()`.
 - **Security.** Mutating routes rely on `http/security.ts`: loopback Host, same-origin Origin and the `x-sworks-csrf` token. Never add CORS headers or a non-loopback bind. Remote downloads must go through `services/remoteFetch.ts`, which validates every hop and pins the connection to the validated address.
 - **"已保存" (saved) in the UI** appears only after a 2xx response. Failed saves keep the draft intact.
 - **Markdown rendering.** All rendering uses the single plugin chain in `src/web/markdown/plugins.ts`.

@@ -59,14 +59,15 @@ pnpm exec playwright test tests/e2e/capture.spec.ts -g "两个页面"
 - 需要执行安装脚本的依赖（原生模块、esbuild）必须列在 `pnpm-workspace.yaml` 的 `allowBuilds` 中。
 - 引入新依赖前检查许可证：`pnpm licenses list --prod`。
 - 运行时不允许从 CDN 加载任何资源；字体、KaTeX 样式与字体都随构建打包。
+- 前端交互优先复用现成的库，不自己实现：菜单/右键菜单/弹出层用 Radix（`@radix-ui/react-*`），命令面板与可搜索选择器用 `cmdk`，树（导航、选项树编辑）用 `@headless-tree/*`，请求缓存用 `@tanstack/react-query`。对话框沿用 `components/ui.tsx` 的原生 `<dialog>`；在对话框里打开 Radix 弹出层时，要把 Portal 的 `container` 指向该对话框。
 
 ## 修改数据库结构
 
-1. 在 `src/server/db/migrations.ts` 新增迁移（版本号递增）。不要修改已发布的迁移，包括 `schema-v1.ts`。
+1. 新增 `src/server/db/schema-vN.ts` 并在 `migrations.ts` 追加迁移（版本号递增）。不要修改已发布的迁移（`schema-v1.ts`、`schema-v2.ts`、`schema-v3.ts`…）。迁移里只写 SQL 与固定数据，不调用业务代码。
 2. 更新 [schema.md](schema.md)。
-3. 更新备份格式：`services/backupFormat.ts` 的 `RECORD_TABLES` 与排序；递增 `BACKUP_SCHEMA_VERSION`；在恢复逻辑中为旧版本备份补上迁移路径，或明确拒绝；更新 [backup-format.md](backup-format.md)。
+3. 更新备份格式：在 `services/backupFormat.ts` 新增 `RECORD_TABLES_VN`（在上一版基础上追加，旧版本定义保持冻结）、`ORDER_BY` 与 `BACKUP_VERSIONS` 的一行；递增 `BACKUP_SCHEMA_VERSION`。恢复会先建出备份对应版本的库再走迁移链，一般不需要额外代码；新表若由迁移写入了默认数据，恢复时会被统一清空再写入备份内容。更新 [backup-format.md](backup-format.md)。
 4. 如果新增的数据需要参与搜索，更新 `services/search.ts` 的投影。
-5. 补测试：新库初始化、从旧版本升级（含升级前安全备份）、备份恢复往返。
+5. 补测试：新库初始化、从旧版本升级（含升级前安全备份，见 `tests/server/migration.test.ts`）、备份恢复往返、旧版本备份恢复（`tests/fixtures/backup-v1.sworks.zip` 由初版程序生成）。
 
 ## 约定
 
@@ -74,5 +75,6 @@ pnpm exec playwright test tests/e2e/capture.spec.ts -g "两个页面"
 - Markdown 源码是权威内容：任何功能都不能因保存、预览、排序或归档而改写用户的 Markdown。
 - 只有服务端确认写入成功后，界面才显示“已保存”；错误要区分下载失败、磁盘不可写、数据库失败、保存冲突等（`src/server/errors.ts`）。
 - 相关的数据库写入放在同一事务中；网络请求和文件 IO 不放进同步事务函数。
-- 新增修改类接口一律走 `http/security.ts` 的校验，不返回 CORS 头；GET 接口不修改数据。
+- 新增修改类接口一律走 `http/security.ts` 的校验，不返回 CORS 头；GET 接口不修改数据。新路由要注册在 `/api/*` 兜底 404 之前；静态子路由（如 `/api/problems/batch`）不要与 `/:id` 冲突。
+- 会改变题目/资料内容的批量操作与管理操作，必须在同一事务里对真正变化的对象递增 `write_version`、刷新 `updated_at` 并 `reindex()`（`entities.ts#bumpVersion`、`touch.ts#makeToucher`）；作答记录不递增题目版本。
 - 界面遵循 `styles/app.css` 的主题变量；原始图片使用 `object-fit: contain`，不裁切、不加滤镜。

@@ -7,7 +7,7 @@ import { AppError } from '../errors.js';
 import { resolveDataDir, webDistDir } from '../paths.js';
 import { startServer } from '../server.js';
 
-const HELP = `SworkS ${APP_VERSION} — 本地题目收集与整理工作台
+const HELP = `SworkS ${APP_VERSION} — 本地家教工作台（收题、整理、学生作答）
 
 用法：
   pnpm start -- [--data-dir <目录>] [--port <端口>]

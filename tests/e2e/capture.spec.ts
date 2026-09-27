@@ -56,7 +56,7 @@ test('粘贴截图即可保存；多块排序、类型化笔记、公式与 call
   await page.getByRole('button', { name: '笔记', exact: true }).click();
   await typeInEditor(page, page.getByTestId('note').nth(2), '这道题的关键是对勾函数。');
   // 属性与标签（可选）
-  await page.getByLabel('学科').fill('数学');
+  await page.getByTestId('problem-editor').getByLabel('学科', { exact: true }).fill('数学');
   await page.getByLabel('添加标签').fill('函数');
   await page.getByLabel('添加标签').press('Enter');
   await saveAndWait(page);
@@ -139,7 +139,9 @@ test('两个页面编辑同一题：后保存的一方得到冲突提示，不�
   await typeInEditor(a, a.getByTestId('content-block').first(), '原始内容');
   await saveAndWait(a);
   const url = a.url();
-  const b = await ctx.newPage();
+  // 另一个浏览器上下文：收不到本浏览器的跨标签页通知，模拟陈旧页面
+  const ctxB = await browser.newContext();
+  const b = await ctxB.newPage();
   await b.goto(url);
   await expect(b.getByTestId('content-block')).toHaveCount(1);
 
@@ -156,6 +158,40 @@ test('两个页面编辑同一题：后保存的一方得到冲突提示，不�
   await expect(b).not.toHaveURL(url);
   const list = await apiGet(server, '/api/problems');
   expect(list.total).toBe(2);
+  await ctx.close();
+  await ctxB.close();
+});
+
+test('同一浏览器的两个标签页：未修改的页面自动刷新，有未保存修改的页面提前提示', async ({ browser }) => {
+  const dataDir = path.join(tempDir(), 'data');
+  server = await startServer(dataDir);
+  const ctx = await browser.newContext();
+  const a = await ctx.newPage();
+  await a.goto(server.url);
+  await a.getByTestId('new-problem').click();
+  await a.getByRole('button', { name: 'Markdown', exact: true }).click();
+  await typeInEditor(a, a.getByTestId('content-block').first(), '原始内容');
+  await saveAndWait(a);
+  const url = a.url();
+  const b = await ctx.newPage();
+  await b.goto(url);
+  await expect(b.getByTestId('content-block')).toHaveCount(1);
+
+  // B 没有未保存修改：A 保存后 B 自动显示最新内容
+  await a.getByLabel('标题（可选）').fill('第一次修改');
+  await saveAndWait(a);
+  await expect(b.getByLabel('标题（可选）')).toHaveValue('第一次修改');
+
+  // B 有未保存修改：A 再保存时 B 立即看到提示，保存会得到冲突而不是覆盖
+  await b.getByLabel('标题（可选）').fill('B 的草稿');
+  await a.getByLabel('标题（可选）').fill('第二次修改');
+  await saveAndWait(a);
+  await expect(b.getByTestId('changed-elsewhere')).toBeVisible();
+  await expect(b.getByLabel('标题（可选）')).toHaveValue('B 的草稿');
+  await b.getByTestId('save-button').click();
+  await expect(b.getByRole('dialog', { name: '保存冲突' })).toBeVisible();
+  const p = await apiGet(server, `/api/problems/${url.split('/').pop()}`);
+  expect(p.title).toBe('第二次修改');
   await ctx.close();
 });
 

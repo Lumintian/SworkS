@@ -23,7 +23,7 @@ export const MATERIAL_STATUS_LABELS: Record<MaterialStatus, string> = {
   active: '已整理',
 };
 
-export const SEARCH_FIELDS = ['title', 'content', 'note', 'answer', 'solution', 'tag', 'source'] as const;
+export const SEARCH_FIELDS = ['title', 'content', 'note', 'answer', 'solution', 'tag', 'property', 'source'] as const;
 export type SearchField = (typeof SEARCH_FIELDS)[number];
 
 export const SEARCH_FIELD_LABELS: Record<SearchField, string> = {
@@ -33,7 +33,75 @@ export const SEARCH_FIELD_LABELS: Record<SearchField, string> = {
   answer: '答案',
   solution: '解析',
   tag: '标签',
+  property: '属性',
   source: '来源备注',
+};
+
+/** 自定义属性的类型（参照 Obsidian 属性与 Notion 字段）。 */
+export const PROPERTY_TYPES = ['text', 'number', 'date', 'checkbox', 'select', 'multiselect'] as const;
+export type PropertyType = (typeof PROPERTY_TYPES)[number];
+
+export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
+  text: '文本',
+  number: '数字',
+  date: '日期',
+  checkbox: '勾选',
+  select: '单选',
+  multiselect: '多选',
+};
+
+/** 预置属性：代码据此找到题型、难度、考点，名称可以改。 */
+export const PROPERTY_PRESETS = ['qtype', 'difficulty', 'knowledge'] as const;
+export type PropertyPreset = (typeof PROPERTY_PRESETS)[number];
+
+/** 属性名不能与导出 front matter 的内置键或内置字段重名。 */
+export const RESERVED_PROPERTY_NAMES = [
+  'id',
+  'title',
+  'subject',
+  'stage',
+  'tags',
+  'created_at',
+  'updated_at',
+  'source_note',
+  'sources',
+  'exported_by',
+  '标题',
+  '学科',
+  '学段',
+  '标签',
+  '来源备注',
+];
+
+/** 作答结果（“不会”单独记，不算作答错）。 */
+export const ATTEMPT_RESULTS = ['correct', 'partial', 'wrong', 'blank'] as const;
+export type AttemptResult = (typeof ATTEMPT_RESULTS)[number];
+
+export const ATTEMPT_RESULT_LABELS: Record<AttemptResult, string> = {
+  correct: '对',
+  partial: '半对',
+  wrong: '错',
+  blank: '不会',
+};
+
+/** 学生对题目的主观难度 1–5。 */
+export const FELT_DIFFICULTY_LABELS: Record<number, string> = {
+  1: '很简单',
+  2: '简单',
+  3: '适中',
+  4: '难',
+  5: '很难',
+};
+
+/** 按学生筛选题目时的作答状态。 */
+export const ATTEMPT_FILTERS = ['none', 'done', 'wrong-ever', 'wrong-last'] as const;
+export type AttemptFilter = (typeof ATTEMPT_FILTERS)[number];
+
+export const ATTEMPT_FILTER_LABELS: Record<AttemptFilter, string> = {
+  none: '未做过',
+  done: '做过',
+  'wrong-ever': '做错过',
+  'wrong-last': '最近一次没做对',
 };
 
 /** 支持的图片格式；其他格式必须显式失败。 */

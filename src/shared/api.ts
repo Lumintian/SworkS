@@ -1,9 +1,14 @@
 /** 前后端共享的请求校验 schema 与响应类型。 */
 import { z } from 'zod';
 import {
+  ATTEMPT_RESULTS,
   BLOCK_KINDS,
   MATERIAL_STATUSES,
+  type AttemptResult,
   NOTE_TYPES,
+  PROPERTY_TYPES,
+  type PropertyPreset,
+  type PropertyType,
   type AssetMime,
   type BlockKind,
   type MaterialStatus,
@@ -44,6 +49,25 @@ export const sourceLinkInputSchema = z
   .strict();
 export type SourceLinkInput = z.infer<typeof sourceLinkInputSchema>;
 
+/**
+ * 一个属性的取值。按属性类型只填对应字段：单选/多选用 optionIds，文本 text，数字 number，
+ * 日期 date（YYYY-MM-DD），勾选 checked。
+ */
+export const propertyValueInputSchema = z
+  .object({
+    propertyId: id,
+    optionIds: z.array(id).max(200).optional(),
+    text: z.string().min(1).max(2_000).optional(),
+    number: z.number().finite().optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    checked: z.boolean().optional(),
+  })
+  .strict();
+export type PropertyValueInput = z.infer<typeof propertyValueInputSchema>;
+
 const baseEntityFields = {
   title: optionalText(300),
   subject: optionalText(50),
@@ -53,6 +77,10 @@ const baseEntityFields = {
   blocks: z.array(blockInputSchema).max(500).default([]),
   /** 本次编辑中产生、尚未归属对象的原始输入记录，保存时挂到该对象。 */
   rawInputIds: z.array(id).max(1_000).default([]),
+  /**
+   * 自定义属性的完整取值。省略表示不改动；提供时，其中没有出现的（未归档）属性视为清空。
+   */
+  properties: z.array(propertyValueInputSchema).max(200).optional(),
 };
 
 export const problemCreateSchema = z
@@ -116,6 +144,159 @@ export const exportMarkdownSchema = z
   .strict();
 
 export const entityVersionSchema = z.object({ expectedVersion: z.number().int().min(1).optional() }).strict();
+
+// ---------- 批量操作 ----------
+
+/** 一次批量操作最多涉及的对象数。 */
+export const MAX_BATCH_IDS = 1_000;
+
+export const batchActionSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('addTags'), names: z.array(z.string().min(1).max(60)).min(1).max(20) }).strict(),
+  z.object({ op: z.literal('removeTags'), tagIds: z.array(id).min(1).max(100) }).strict(),
+  z.object({ op: z.literal('setSubject'), value: z.string().max(50).nullable() }).strict(),
+  z.object({ op: z.literal('setStage'), value: z.string().max(50).nullable() }).strict(),
+  z.object({ op: z.literal('setStatus'), status: z.enum(MATERIAL_STATUSES) }).strict(),
+  z.object({ op: z.literal('trash') }).strict(),
+  z.object({ op: z.literal('restore') }).strict(),
+  /** 设置某个属性的取值（替换原值）；value 为 null 时清空 */
+  z.object({ op: z.literal('setProperty'), value: propertyValueInputSchema.nullable(), propertyId: id }).strict(),
+  /** 多选属性：追加 / 移除选项，不影响其他选项 */
+  z.object({ op: z.literal('addOptions'), propertyId: id, optionIds: z.array(id).min(1).max(50) }).strict(),
+  z.object({ op: z.literal('removeOptions'), propertyId: id, optionIds: z.array(id).min(1).max(50) }).strict(),
+]);
+export type BatchAction = z.infer<typeof batchActionSchema>;
+
+export const batchSchema = z
+  .object({
+    ids: z.array(id).min(1).max(MAX_BATCH_IDS),
+    action: batchActionSchema,
+  })
+  .strict();
+export type BatchInput = z.infer<typeof batchSchema>;
+
+// ---------- 标签与字典管理 ----------
+
+export const tagRenameSchema = z
+  .object({
+    from: z.string().min(1).max(200),
+    to: z.string().min(1).max(200),
+  })
+  .strict();
+
+export const tagDeleteSchema = z.object({ path: z.string().min(1).max(200) }).strict();
+
+// ---------- 自定义属性管理 ----------
+
+export const propertyCreateSchema = z
+  .object({
+    id,
+    name: z.string().min(1).max(40),
+    type: z.enum(PROPERTY_TYPES),
+    nested: z.boolean().default(false),
+    appliesProblem: z.boolean().default(true),
+    appliesMaterial: z.boolean().default(false),
+  })
+  .strict();
+
+export const propertyUpdateSchema = z
+  .object({
+    name: z.string().min(1).max(40).optional(),
+    showInNav: z.boolean().optional(),
+    appliesProblem: z.boolean().optional(),
+    appliesMaterial: z.boolean().optional(),
+  })
+  .strict();
+
+export const idListSchema = z.object({ ids: z.array(id).min(1).max(500) }).strict();
+
+export const optionCreateSchema = z
+  .object({
+    id,
+    label: z.string().min(1).max(60),
+    parentId: id.nullable().default(null),
+  })
+  .strict();
+
+export const optionUpdateSchema = z.object({ label: z.string().min(1).max(60) }).strict();
+export const optionMoveSchema = z
+  .object({
+    parentId: id.nullable(),
+    /** 在新父节点下的位置（从 0 开始）；省略表示放到最后 */
+    index: z.number().int().min(0).optional(),
+  })
+  .strict();
+export const optionMergeSchema = z.object({ intoId: id }).strict();
+export const optionPathSchema = z.object({ path: z.string().min(1).max(400) }).strict();
+export const outlineImportSchema = z.object({ outline: z.string().min(1).max(200_000) }).strict();
+
+// ---------- 学生与作答记录 ----------
+
+export const studentCreateSchema = z
+  .object({
+    id,
+    name: z.string().min(1).max(60),
+    stage: optionalText(50),
+    note: optionalText(4_000),
+  })
+  .strict();
+
+export const studentUpdateSchema = z
+  .object({
+    name: z.string().min(1).max(60).optional(),
+    stage: optionalText(50),
+    note: optionalText(4_000),
+    expectedVersion: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+const attemptFields = {
+  result: z.enum(ATTEMPT_RESULTS),
+  feltDifficulty: z.number().int().min(1).max(5).nullable().optional(),
+  durationSec: z.number().int().min(0).max(24 * 3600).nullable().optional(),
+  note: optionalText(4_000),
+  attemptedAt: z.iso.datetime({ offset: true }).optional(),
+};
+
+export const attemptCreateSchema = z
+  .object({
+    id,
+    studentId: id,
+    problemId: id,
+    ...attemptFields,
+  })
+  .strict();
+
+export const attemptUpdateSchema = z
+  .object({
+    result: z.enum(ATTEMPT_RESULTS).optional(),
+    feltDifficulty: z.number().int().min(1).max(5).nullable().optional(),
+    durationSec: z.number().int().min(0).max(24 * 3600).nullable().optional(),
+    note: optionalText(4_000),
+    attemptedAt: z.iso.datetime({ offset: true }).optional(),
+  })
+  .strict();
+
+/** 批量记录：同一个学生、同一结果，给每道题各记一条（ID 由客户端生成，重试不会重复）。 */
+export const attemptBatchSchema = z
+  .object({
+    studentId: id,
+    items: z.array(z.object({ id, problemId: id }).strict()).min(1).max(MAX_BATCH_IDS),
+    ...attemptFields,
+  })
+  .strict();
+
+export const DICT_KINDS = ['subject', 'stage'] as const;
+export type DictKind = (typeof DICT_KINDS)[number];
+
+export const dictValueSchema = z.object({ value: z.string().min(1).max(50) }).strict();
+export const dictRenameSchema = z
+  .object({
+    from: z.string().min(1).max(50),
+    /** null 表示从所有对象上清除这个值 */
+    to: z.string().min(1).max(50).nullable(),
+  })
+  .strict();
+export const dictReorderSchema = z.object({ values: z.array(z.string().min(1).max(50)).max(500) }).strict();
 
 // ---------- 响应类型 ----------
 
@@ -195,6 +376,117 @@ export interface DerivedProblemDTO {
   createdAt: string;
 }
 
+/** 一个属性的取值（返回给前端的形式，与 PropertyValueInput 对应）。 */
+export interface PropertyValueDTO {
+  propertyId: string;
+  optionIds?: string[];
+  text?: string;
+  number?: number;
+  date?: string;
+  checked?: boolean;
+}
+
+export interface PropertyOptionDTO {
+  id: string;
+  parentId: string | null;
+  label: string;
+  /** 从根到自身的完整路径，例如“函数/单调性” */
+  path: string;
+  position: number;
+  depth: number;
+}
+
+export interface PropertyDefDTO {
+  id: string;
+  name: string;
+  type: PropertyType;
+  nested: boolean;
+  appliesProblem: boolean;
+  appliesMaterial: boolean;
+  preset: PropertyPreset | null;
+  position: number;
+  showInNav: boolean;
+  archived: boolean;
+  /** 未删除的选项，按树的深度优先顺序 */
+  options: PropertyOptionDTO[];
+}
+
+export interface StudentStatsDTO {
+  /** 做过的不同题目数 */
+  problems: number;
+  /** 作答总次数 */
+  attempts: number;
+  correct: number;
+  partial: number;
+  wrong: number;
+  blank: number;
+  /** 最近一次没做对的题目数（当前错题） */
+  openMistakes: number;
+  lastAttemptAt: string | null;
+}
+
+export interface StudentDTO {
+  id: string;
+  name: string;
+  stage: string | null;
+  note: string | null;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  stats: StudentStatsDTO;
+}
+
+export interface AttemptDTO {
+  id: string;
+  studentId: string;
+  studentName: string;
+  problemId: string;
+  problemTitle: string | null;
+  problemSummary: string;
+  problemDeleted: boolean;
+  attemptedAt: string;
+  result: AttemptResult;
+  feltDifficulty: number | null;
+  durationSec: number | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 某个考点（含子树）上的作答统计。 */
+export interface WeakPointDTO {
+  optionId: string;
+  path: string;
+  attempts: number;
+  /** 没做对的次数（半对按 0.5 计） */
+  misses: number;
+  problems: number;
+  /** 0–1 */
+  missRate: number;
+}
+
+export interface StudentDetailDTO extends StudentDTO {
+  weakPoints: WeakPointDTO[];
+  recentAttempts: AttemptDTO[];
+}
+
+/** 列表项上当前学生的作答摘要。 */
+export interface AttemptSummaryDTO {
+  count: number;
+  /** 错与不会的次数 */
+  wrong: number;
+  partial: number;
+  lastResult: AttemptResult;
+  lastAt: string;
+  lastFelt: number | null;
+}
+
+export interface OutlineImportResultDTO {
+  created: number;
+  existing: number;
+}
+
 interface EntityCommon {
   id: string;
   title: string | null;
@@ -206,6 +498,8 @@ interface EntityCommon {
   deletedAt: string | null;
   version: number;
   tags: string[];
+  /** 未归档属性的取值 */
+  properties: PropertyValueDTO[];
   blocks: BlockDTO[];
   /** blocks/notes 引用到的附件与远程图片，便于前端渲染。 */
   assets: Record<string, AssetDTO>;
@@ -245,6 +539,10 @@ export interface ListItemDTO {
   imageCount: number;
   noteCounts?: Record<NoteType, number>;
   status?: MaterialStatus;
+  /** 属性取值的显示文字（选项为完整路径） */
+  properties: { propertyId: string; values: string[] }[];
+  /** 按学生筛选时：该学生在这道题上的作答摘要（没做过为 null） */
+  attempt?: AttemptSummaryDTO | null;
   hits: SearchField[];
 }
 
@@ -253,6 +551,71 @@ export interface ListResponse {
   total: number;
   offset: number;
   limit: number;
+}
+
+export interface ListIdsResponse {
+  ids: string[];
+  total: number;
+  /** 超过上限时只返回前 MAX_BATCH_IDS 个 */
+  truncated: boolean;
+}
+
+export interface BatchResultDTO {
+  /** 实际发生变化的对象 */
+  changed: string[];
+  /** 没有变化（已满足条件）的对象数 */
+  unchanged: number;
+  /** 因在回收站中而跳过的对象数 */
+  skipped: number;
+  /** addTags：解析（或新建）后的标签 ID，便于撤销 */
+  tagIds?: string[];
+}
+
+export interface NavCountDTO {
+  value: string;
+  count: number;
+}
+
+export interface NavDTO {
+  library: { problems: number; materials: number; inbox: number };
+  /** 当前集合中至少被一个（未删除）对象使用的标签，以及直接计数 */
+  tags: { id: string; name: string; count: number }[];
+  /** 标签树各节点（tagKey）下不重复的对象数，含子孙 */
+  tagTreeCounts: Record<string, number>;
+  untagged: number;
+  subjects: NavCountDTO[];
+  stages: NavCountDTO[];
+  noSubject: number;
+  noStage: number;
+  /** 显示在导航中的单选/多选/勾选属性 */
+  properties: NavPropertyDTO[];
+}
+
+export interface NavPropertyDTO {
+  propertyId: string;
+  /** 选项 ID → 该选项子树下不重复的对象数；勾选属性用键 "__true__" */
+  counts: Record<string, number>;
+  /** 没有设置这个属性的对象数 */
+  none: number;
+}
+
+export interface TagRenameResultDTO {
+  renamed: number;
+  merged: number;
+  affectedItems: number;
+}
+
+export interface DictEntryDTO {
+  value: string;
+  /** 是否在候选列表（字典）中；否则只是有对象在使用 */
+  inDict: boolean;
+  problemCount: number;
+  materialCount: number;
+}
+
+export interface DictManageDTO {
+  subject: DictEntryDTO[];
+  stage: DictEntryDTO[];
 }
 
 export interface TagDTO {

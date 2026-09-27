@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { MIGRATIONS } from '../../src/server/db/migrations.js';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS } from '../../src/server/db/migrations.js';
 import { openLibrary, type OpenedLibrary } from '../../src/server/library.js';
 import { appRoot, resolveDataDir } from '../../src/server/paths.js';
 import { makeTempDir, newId } from '../helpers/server.js';
@@ -90,7 +90,8 @@ describe('数据目录与数据库', () => {
     lib.db.prepare("INSERT INTO problems (id, created_at, updated_at) VALUES (?, 'a', 'a')").run(pid);
     lib.close();
     opened.pop();
-    const v2 = [...MIGRATIONS, { version: 2, name: 'test', up: (db: Database.Database) => db.exec('ALTER TABLE problems ADD COLUMN extra TEXT') }];
+    const L = LATEST_SCHEMA_VERSION;
+    const v2 = [...MIGRATIONS, { version: L + 1, name: 'test', up: (db: Database.Database) => db.exec('ALTER TABLE problems ADD COLUMN extra TEXT') }];
 
     if (!isRoot) {
       const backups = path.join(dir, 'backups');
@@ -98,16 +99,16 @@ describe('数据目录与数据库', () => {
       restorePerms.push(() => fs.chmodSync(backups, 0o755));
       await expect(openLibrary(dir, { migrations: v2 })).rejects.toMatchObject({ code: 'MIGRATION_BACKUP_FAILED' });
       const check = new Database(path.join(dir, 'db.sqlite3'), { readonly: true });
-      expect(check.pragma('user_version', { simple: true })).toBe(1);
+      expect(check.pragma('user_version', { simple: true })).toBe(L);
       check.close();
       for (const f of restorePerms.splice(0)) f();
     }
 
     const upgraded = await open(dir, { migrations: v2 });
-    expect(upgraded.migration).toMatchObject({ from: 1, to: 2 });
-    expect(upgraded.migration.safetyBackup).toMatch(/pre-migration-v1-to-v2-.*\.sqlite3$/);
+    expect(upgraded.migration).toMatchObject({ from: L, to: L + 1 });
+    expect(upgraded.migration.safetyBackup).toMatch(new RegExp(`pre-migration-v${L}-to-v${L + 1}-.*\\.sqlite3$`));
     const snap = new Database(upgraded.migration.safetyBackup!, { readonly: true });
-    expect(snap.pragma('user_version', { simple: true })).toBe(1);
+    expect(snap.pragma('user_version', { simple: true })).toBe(L);
     expect(snap.prepare('SELECT id FROM problems').all()).toEqual([{ id: pid }]);
     snap.close();
   });

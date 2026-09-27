@@ -113,3 +113,41 @@ describe('开放 Markdown 导出', () => {
     expect((await t.request('POST', '/api/export/markdown', { problemIds: [a] })).status).toBe(404);
   });
 });
+
+describe('导出属性', () => {
+  it('front matter 写入属性：单选为值、多选为列表、层级选项为路径、数字不加引号', async () => {
+    t = await makeTestApp();
+    const defs = (await t.json('GET', '/api/properties')).body as { id: string; preset: string | null; options: { id: string; label: string }[] }[];
+    const diff = defs.find((d) => d.preset === 'difficulty')!;
+    const kp = defs.find((d) => d.preset === 'knowledge')!;
+    const mono = (await t.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: '函数/单调性' })).body.optionId;
+    const year = (await t.json('POST', '/api/properties', { id: newId(), name: '年份', type: 'number' })).body;
+    const id = newId();
+    await t.json('POST', '/api/problems', {
+      id,
+      blocks: [{ id: newId(), kind: 'markdown', body: '题干' }],
+      properties: [
+        { propertyId: diff.id, optionIds: [diff.options.find((o) => o.label === '较难')!.id] },
+        { propertyId: kp.id, optionIds: [mono] },
+        { propertyId: year.id, number: 2024 },
+      ],
+    });
+    const md = (await exportZip(t, [id])).get(`sworks-export/problem-${id}.md`)!.toString('utf8');
+    expect(md).toContain('"难度": "较难"');
+    expect(md).toContain('"考点": ["函数/单调性"]');
+    expect(md).toContain('"年份": 2024');
+  });
+
+  it('导出不包含学生与作答记录', async () => {
+    t = await makeTestApp();
+    const id = newId();
+    await t.json('POST', '/api/problems', { id, blocks: [{ id: newId(), kind: 'markdown', body: '题干' }] });
+    const sid = newId();
+    await t.json('POST', '/api/students', { id: sid, name: '隐私学生' });
+    await t.json('POST', '/api/attempts', { id: newId(), studentId: sid, problemId: id, result: 'wrong', note: '私人作答备注' });
+    const files = await exportZip(t, [id]);
+    const all = [...files.values()].map((b) => b.toString('utf8')).join('\n');
+    expect(all).not.toContain('隐私学生');
+    expect(all).not.toContain('私人作答备注');
+  });
+});

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../../src/server/db/connection.js';
 import { sha256File } from '../../src/server/services/assetStore.js';
 import { exportRecords } from '../../src/server/services/backupFormat.js';
+import { LATEST_SCHEMA_VERSION } from '../../src/server/db/migrations.js';
 import { restoreBackup } from '../../src/server/services/restore.js';
 import { fakePng, makeTempDir, makeTestApp, newId, uploadImage, type TestApp } from '../helpers/server.js';
 import { readZip, rezip, writeRawZip, zipWithTraversalEntry } from '../helpers/zip.js';
@@ -90,6 +91,33 @@ async function seed(t: TestApp) {
   const trashed = newId();
   await t.json('POST', '/api/problems', { id: trashed, title: '回收站里的题', blocks: [{ id: newId(), kind: 'image', assetId: shared.asset.id }] });
   await t.request('DELETE', `/api/problems/${trashed}`);
+  // 属性：考点树里子节点比父节点先创建（先建“单调性”，再建“函数”并把前者移到其下）
+  const defs = (await t.json('GET', '/api/properties')).body as { id: string; preset: string | null; options: { id: string; label: string }[] }[];
+  const kp = defs.find((d) => d.preset === 'knowledge')!;
+  const diff = defs.find((d) => d.preset === 'difficulty')!;
+  const child = newId();
+  const parent = newId();
+  await t.json('POST', `/api/properties/${kp.id}/options`, { id: child, label: '单调性' });
+  await t.json('POST', `/api/properties/${kp.id}/options`, { id: parent, label: '函数' });
+  await t.json('POST', `/api/property-options/${child}/move`, { parentId: parent });
+  const year = (await t.json('POST', '/api/properties', { id: newId(), name: '年份', type: 'number' })).body;
+  await t.json('POST', '/api/problems/batch', { ids: [pid], action: { op: 'addOptions', propertyId: kp.id, optionIds: [child] } });
+  await t.json('POST', '/api/problems/batch', {
+    ids: [pid],
+    action: { op: 'setProperty', propertyId: diff.id, value: { propertyId: diff.id, optionIds: [diff.options[3]!.id] } },
+  });
+  await t.json('POST', '/api/problems/batch', { ids: [pid], action: { op: 'setProperty', propertyId: year.id, value: { propertyId: year.id, number: 2023 } } });
+  await t.json('POST', '/api/materials/batch', { ids: [mid], action: { op: 'addOptions', propertyId: kp.id, optionIds: [parent] } });
+  // 学生与作答记录（含一条已删除的作答、一个已归档的学生）
+  const sid = newId();
+  await t.json('POST', '/api/students', { id: sid, name: '小明', stage: '高二', note: '周六上课' });
+  await t.json('POST', '/api/attempts', { id: newId(), studentId: sid, problemId: pid, result: 'wrong', feltDifficulty: 4, note: '漏了定义域' });
+  const removed = newId();
+  await t.json('POST', '/api/attempts', { id: removed, studentId: sid, problemId: pid, result: 'correct' });
+  await t.json('POST', `/api/attempts/${removed}/delete`);
+  const old = newId();
+  await t.json('POST', '/api/students', { id: old, name: '已结课的学生' });
+  await t.json('POST', `/api/students/${old}/archive`);
   return { pid, mid, trashed, deletedNote };
 }
 
@@ -138,6 +166,10 @@ describe('全库备份与恢复往返', () => {
     const after = snapshotAll(path.join(target, 'db.sqlite3'));
     // 逻辑数据一致（不比较 ZIP 字节）
     expect(after).toEqual(before);
+    expect(after.property_values.length).toBe(4);
+    expect(after.students.length).toBe(2);
+    expect(after.student_attempts.filter((a) => a.deleted_at !== null)).toHaveLength(1);
+    expect(after.property_options.some((o) => o.label === '单调性' && o.parent_id !== null)).toBe(true);
     const p = after.problems.find((x) => x.id === seeded.pid)!;
     expect(p.title).toBeNull();
     expect(after.problems.find((x) => x.id === seeded.trashed)!.deleted_at).not.toBeNull();
@@ -307,5 +339,43 @@ describe('篡改、损坏、未知版本和越界路径均被拒绝，原库不�
     fs.mkdirSync(empty);
     await restoreBackup(zip, empty);
     expect(fs.existsSync(path.join(empty, 'db.sqlite3'))).toBe(true);
+  });
+});
+
+describe('旧版本备份', () => {
+  it('v1 备份（初版程序生成）可以恢复到当前版本：先按 v1 写入，再走迁移链补上预置属性', async () => {
+    const fixture = path.resolve(import.meta.dirname, '../fixtures/backup-v1.sworks.zip');
+    const target = path.join(work, 'restored-v1');
+    const result = await restoreBackup(fixture, target);
+    expect(result.manifest.backupSchemaVersion).toBe(1);
+    expect(result.counts.problems).toBe(2);
+    t = await makeTestApp({ dataDir: target });
+    const p = (await t.json('GET', '/api/problems/22222222-2222-4222-8222-222222222222')).body;
+    expect(p.title).toBe('均值不等式求最值');
+    expect(p.tags).toEqual(['函数', '易错']);
+    expect(p.properties).toEqual([]);
+    expect(p.notes[0].bodyMd).toBe('最小值为 $2$');
+    expect((await t.json('GET', '/api/problems/33333333-3333-4333-8333-333333333333')).body.deletedAt).not.toBeNull();
+    // 检索投影已重建
+    expect((await t.json('GET', `/api/problems?q=${encodeURIComponent('最小值')}`)).body.total).toBe(1);
+    // 预置属性由迁移补上
+    const defs = (await t.json('GET', '/api/properties')).body as { preset: string }[];
+    expect(defs.map((d) => d.preset)).toEqual(['qtype', 'difficulty', 'knowledge']);
+    expect(t.lib.db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+    // 恢复后的库可以正常备份（当前格式）
+    const again = await t.json('POST', '/api/backups');
+    expect(again.status).toBe(201);
+  });
+
+  it('不认识的备份版本组合被拒绝', async () => {
+    t = await makeTestApp();
+    await seed(t);
+    const zip = await makeBackup(t);
+    const entries = await readZip(zip);
+    const manifest = JSON.parse(entries.find((e) => e.name === 'manifest.json')!.data.toString());
+    manifest.backupSchemaVersion = 1; // 声称 v1 格式，却带着 v2 数据库版本
+    const bad = path.join(work, 'mismatch.zip');
+    await rezip(zip, bad, (e) => (e.name === 'manifest.json' ? Buffer.from(JSON.stringify(manifest)) : e.data));
+    await expect(restoreBackup(bad, path.join(work, 'x'))).rejects.toMatchObject({ code: 'BACKUP_UNSUPPORTED' });
   });
 });

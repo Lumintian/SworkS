@@ -59,6 +59,34 @@ describe('本地 API 安全边界', () => {
     expect(row.deleted_at).toBeNull();
   });
 
+  it('批量与分类管理接口同样要求 CSRF 令牌；GET 列表与导航不写数据', async () => {
+    t = await makeTestApp();
+    const id = newId();
+    await t.request('POST', '/api/problems', { ...create(id), tags: ['旧'] });
+    const version = () => (t!.lib.db.prepare('SELECT write_version AS v FROM problems WHERE id = ?').get(id) as { v: number }).v;
+    const posts: [string, unknown][] = [
+      ['/api/problems/batch', { ids: [id], action: { op: 'trash' } }],
+      ['/api/tags/rename', { from: '旧', to: '新' }],
+      ['/api/tags/delete', { path: '旧' }],
+      ['/api/dict/subject/add', { value: '奥数' }],
+      ['/api/dict/subject/rename', { from: '数学', to: null }],
+      ['/api/properties', { id: newId(), name: '年份', type: 'number' }],
+      ['/api/students', { id: newId(), name: '学生' }],
+      ['/api/attempts', { id: newId(), studentId: newId(), problemId: id, result: 'wrong' }],
+    ];
+    for (const [url, body] of posts) {
+      expect((await t.request('POST', url, body, { 'x-sworks-csrf': '' })).status, url).toBe(403);
+      expect((await t.request('POST', url, body, { origin: 'https://evil.example.com' })).status, url).toBe(403);
+    }
+    for (const url of ['/api/nav', '/api/problems?fields=ids', '/api/dict/manage', '/api/tags?all=1', '/api/properties?all=1', '/api/students?all=1', '/api/attempts']) {
+      expect((await t.request('GET', url)).status, url).toBe(200);
+    }
+    expect(version()).toBe(1);
+    expect((await t.json('GET', `/api/problems/${id}`)).body.tags).toEqual(['旧']);
+    expect(t.lib.db.prepare('SELECT COUNT(*) AS n FROM students').get()).toEqual({ n: 0 });
+    expect(t.lib.db.prepare('SELECT COUNT(*) AS n FROM property_defs').get()).toEqual({ n: 3 });
+  });
+
   it('附件读取使用受控路径，禁止路径穿越与任意文件读取', async () => {
     t = await makeTestApp();
     const up = await uploadImage(t);

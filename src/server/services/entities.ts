@@ -11,6 +11,7 @@ import type {
   MaterialDTO,
   NoteInput,
   ProblemDTO,
+  PropertyValueInput,
   RemoteImageDTO,
   SaveResult,
   SourceLinkInput,
@@ -22,6 +23,7 @@ import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { toAssetDTO, type AssetRow } from './assetStore.js';
 import { extractImageRefs, remoteImageUrls } from './markdown.js';
+import { copyProperties, loadPropertyValues, writeProperties } from './properties.js';
 import { reindex } from './search.js';
 import {
   normalizeShortText,
@@ -45,7 +47,7 @@ import {
 
 // ---------------------------------------------------------------- 读取
 
-function getEntityRow(db: DB, kind: OwnerKind, id: string): EntityRow | undefined {
+export function getEntityRow(db: DB, kind: OwnerKind, id: string): EntityRow | undefined {
   return db.prepare(`SELECT * FROM ${ownerTable(kind)} WHERE id = ?`).get(id) as EntityRow | undefined;
 }
 
@@ -173,6 +175,7 @@ export function loadProblem(db: DB, id: string): ProblemDTO | null {
     deletedAt: row.deleted_at,
     version: row.write_version,
     tags: loadTags(db, owner),
+    properties: loadPropertyValues(db, owner),
     blocks: blocks.map(toBlockDTO),
     notes: notes.map(toNoteDTO),
     sources: sources.map((s) => ({
@@ -224,6 +227,7 @@ export function loadMaterial(db: DB, id: string): MaterialDTO | null {
     deletedAt: row.deleted_at,
     version: row.write_version,
     tags: loadTags(db, owner),
+    properties: loadPropertyValues(db, owner),
     blocks: blocks.map(toBlockDTO),
     rawInputs: rawInputs.map(toRawInputDTO),
     derivedProblems: derived.map((d) => ({
@@ -336,14 +340,12 @@ function writeBlocks(db: DB, owner: Owner, input: BlockInput[], now: string): bo
   return changed;
 }
 
-function writeTags(db: DB, owner: Owner, names: string[]): boolean {
-  const table = tagTable(owner.kind);
-  const col = ownerColumn(owner.kind);
-  const wanted = normalizeTagNames(names);
+/** 按名称（不区分大小写）找到标签，不存在则新建；返回与规范化后名称一一对应的 ID。 */
+export function resolveTagIds(db: DB, names: readonly string[]): string[] {
   const find = db.prepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE');
   const createTag = db.prepare('INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)');
   const ids: string[] = [];
-  for (const name of wanted) {
+  for (const name of normalizeTagNames(names)) {
     const row = find.get(name) as { id: string } | undefined;
     if (row) ids.push(row.id);
     else {
@@ -352,6 +354,13 @@ function writeTags(db: DB, owner: Owner, names: string[]): boolean {
       ids.push(id);
     }
   }
+  return [...new Set(ids)];
+}
+
+function writeTags(db: DB, owner: Owner, names: string[]): boolean {
+  const table = tagTable(owner.kind);
+  const col = ownerColumn(owner.kind);
+  const ids = resolveTagIds(db, names);
   const current = new Set(
     (db.prepare(`SELECT tag_id FROM ${table} WHERE ${col} = ?`).all(owner.id) as { tag_id: string }[]).map((r) => r.tag_id),
   );
@@ -370,6 +379,15 @@ function writeTags(db: DB, owner: Owner, names: string[]): boolean {
     }
   }
   return changed;
+}
+
+/**
+ * 对象内容发生了实际变化：递增 write_version 并刷新 updated_at。
+ * 批量操作与管理操作也必须调用，这样仍打开着的旧编辑页保存时会得到 409，不会把旧值写回。
+ * 调用方负责在同一事务内 reindex。
+ */
+export function bumpVersion(db: DB, kind: OwnerKind, id: string, now: string): void {
+  db.prepare(`UPDATE ${ownerTable(kind)} SET updated_at = ?, write_version = write_version + 1 WHERE id = ?`).run(now, id);
 }
 
 function writeNotes(db: DB, problemId: string, input: NoteInput[], now: string): boolean {
@@ -509,6 +527,8 @@ export interface ProblemWrite {
   notes: NoteInput[];
   sources: SourceLinkInput[];
   rawInputIds: string[];
+  /** 省略表示不改动属性 */
+  properties?: PropertyValueInput[] | undefined;
 }
 
 export function createProblem(ctx: AppContext, id: string, input: ProblemWrite): SaveResult<ProblemDTO> {
@@ -532,6 +552,7 @@ export function createProblem(ctx: AppContext, id: string, input: ProblemWrite):
     const owner: Owner = { kind: 'problem', id };
     writeBlocks(db, owner, input.blocks, now);
     writeTags(db, owner, input.tags);
+    writeProperties(db, owner, input.properties);
     writeNotes(db, id, input.notes, now);
     writeSources(db, id, input.sources, now);
     linkRawInputs(db, owner, input.rawInputIds);
@@ -584,6 +605,7 @@ export function updateProblem(
     }
     changed = writeBlocks(db, owner, input.blocks, now) || changed;
     changed = writeTags(db, owner, input.tags) || changed;
+    changed = writeProperties(db, owner, input.properties) || changed;
     changed = writeNotes(db, id, input.notes, now) || changed;
     changed = writeSources(db, id, input.sources, now) || changed;
     linkRawInputs(db, owner, input.rawInputIds);
@@ -609,6 +631,8 @@ export interface MaterialWrite {
   tags: string[];
   blocks: BlockInput[];
   rawInputIds: string[];
+  /** 省略表示不改动属性 */
+  properties?: PropertyValueInput[] | undefined;
 }
 
 export function createMaterial(ctx: AppContext, id: string, input: MaterialWrite): SaveResult<MaterialDTO> {
@@ -633,6 +657,7 @@ export function createMaterial(ctx: AppContext, id: string, input: MaterialWrite
     const owner: Owner = { kind: 'material', id };
     writeBlocks(db, owner, input.blocks, now);
     writeTags(db, owner, input.tags);
+    writeProperties(db, owner, input.properties);
     linkRawInputs(db, owner, input.rawInputIds);
     remoteIds = ensureRemoteImages(db, markdownSourcesOf(input.blocks).flatMap(remoteImageUrls));
     reindex(db, 'material', id);
@@ -686,6 +711,7 @@ export function updateMaterial(
     }
     changed = writeBlocks(db, owner, input.blocks, now) || changed;
     changed = writeTags(db, owner, input.tags) || changed;
+    changed = writeProperties(db, owner, input.properties) || changed;
     linkRawInputs(db, owner, input.rawInputIds);
     if (changed) {
       db.prepare('UPDATE materials SET updated_at = ?, write_version = write_version + 1 WHERE id = ?').run(now, id);
@@ -747,6 +773,8 @@ export function deriveProblemFromMaterial(
       normalizeShortText(input.note),
       now,
     );
+    // 同时适用于题目的属性（例如考点）一并带过来
+    copyProperties(db, { kind: 'material', id: materialId }, { kind: 'problem', id: input.problemId });
     reindex(db, 'problem', input.problemId);
     if (input.markMaterialActive && material.status !== 'active') {
       db.prepare(
@@ -760,18 +788,21 @@ export function deriveProblemFromMaterial(
 
 // ---------------------------------------------------------------- 软删除与恢复
 
+/** 软删除/恢复的核心逻辑，不自带事务；返回新的版本号与是否变化。 */
+export function setDeletedTx(db: DB, kind: OwnerKind, id: string, deleted: boolean): { version: number; changed: boolean } {
+  const row = getEntityRow(db, kind, id);
+  if (!row) throw new AppError('NOT_FOUND', kind === 'problem' ? '题目不存在' : '资料不存在');
+  if ((row.deleted_at !== null) === deleted) return { version: row.write_version, changed: false };
+  db.prepare(`UPDATE ${ownerTable(kind)} SET deleted_at = ?, write_version = write_version + 1 WHERE id = ?`).run(
+    deleted ? nowIso() : null,
+    id,
+  );
+  return { version: row.write_version + 1, changed: true };
+}
+
 export function setDeleted(ctx: AppContext, kind: OwnerKind, id: string, deleted: boolean): number {
   const { db } = ctx;
-  return db.transaction(() => {
-    const row = getEntityRow(db, kind, id);
-    if (!row) throw new AppError('NOT_FOUND', kind === 'problem' ? '题目不存在' : '资料不存在');
-    if ((row.deleted_at !== null) === deleted) return row.write_version;
-    db.prepare(`UPDATE ${ownerTable(kind)} SET deleted_at = ?, write_version = write_version + 1 WHERE id = ?`).run(
-      deleted ? nowIso() : null,
-      id,
-    );
-    return row.write_version + 1;
-  })();
+  return db.transaction(() => setDeletedTx(db, kind, id, deleted).version)();
 }
 
 export function restoreNote(ctx: AppContext, noteId: string): ProblemDTO {

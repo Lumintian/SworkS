@@ -12,6 +12,7 @@ import { AppError } from '../errors.js';
 import { timestampForFile } from '../fsutil.js';
 import type { AssetRow } from './assetStore.js';
 import { loadProblem } from './entities.js';
+import { propertyDisplay } from './properties.js';
 import { rewriteImageUrls } from './markdown.js';
 import { writeZip, type ZipItem } from './zip.js';
 
@@ -87,6 +88,14 @@ export function renderProblemMarkdown(ctx: AppContext, p: ProblemDTO, st: Export
   lines.push(`subject: ${yamlString(p.subject)}`);
   lines.push(`stage: ${yamlString(p.stage)}`);
   lines.push(`tags: [${p.tags.map((t) => JSON.stringify(t)).join(', ')}]`);
+  // 自定义属性：键为属性名；多选写成列表，层级选项写成路径（例如 数学/函数/单调性）
+  for (const prop of propertyDisplay(ctx.db, { kind: 'problem', id: p.id })) {
+    const key = JSON.stringify(prop.name);
+    if (prop.type === 'multiselect') lines.push(`${key}: [${prop.values.map((v) => JSON.stringify(v)).join(', ')}]`);
+    else if (prop.type === 'checkbox') lines.push(`${key}: true`);
+    else if (prop.type === 'number') lines.push(`${key}: ${prop.values[0]}`);
+    else lines.push(`${key}: ${yamlString(prop.values[0] ?? null)}`);
+  }
   lines.push(`created_at: ${p.createdAt}`);
   lines.push(`updated_at: ${p.updatedAt}`);
   lines.push(`source_note: ${yamlString(p.sourceNote)}`);

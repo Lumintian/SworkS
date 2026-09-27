@@ -1,8 +1,11 @@
 /** 字典、标签、回收站等辅助查询。 */
-import type { TagDTO, TrashDTO } from '../../shared/api.js';
+import type { NavCountDTO, NavDTO, TagDTO, TrashDTO } from '../../shared/api.js';
 import type { NoteType } from '../../shared/constants.js';
+import { ancestorKeys, tagKey } from '../../shared/tagPath.js';
 import type { DB } from '../db/connection.js';
 import { plainSummary } from './markdown.js';
+import { navPropertyCounts } from './properties.js';
+import { ownerColumn, ownerTable, tagTable, type OwnerKind } from './rows.js';
 
 export function getDictionary(db: DB): { subjects: string[]; stages: string[] } {
   const list = (kind: 'subject' | 'stage', col: 'subject' | 'stage') => {
@@ -23,7 +26,8 @@ export function getDictionary(db: DB): { subjects: string[]; stages: string[] } 
   return { subjects: list('subject', 'subject'), stages: list('stage', 'stage') };
 }
 
-export function listTags(db: DB): TagDTO[] {
+/** 标签列表；默认只列出至少被一个未删除对象使用的标签，all 为真时包含全部。 */
+export function listTags(db: DB, opts: { all?: boolean } = {}): TagDTO[] {
   return (
     db
       .prepare(
@@ -35,7 +39,71 @@ export function listTags(db: DB): TagDTO[] {
       .all() as { id: string; name: string; problem_count: number; material_count: number }[]
   )
     .map((r) => ({ id: r.id, name: r.name, problemCount: r.problem_count, materialCount: r.material_count }))
-    .filter((t) => t.problemCount + t.materialCount > 0);
+    .filter((t) => opts.all || t.problemCount + t.materialCount > 0);
+}
+
+/**
+ * 导航面板的计数：库、标签树（子树计数按不重复的对象算）、无标签、学科/学段各值。
+ * 只统计未删除的对象。
+ */
+export function getNav(db: DB, kind: OwnerKind): NavDTO {
+  const count = (sql: string, ...params: unknown[]) => (db.prepare(sql).get(...params) as { n: number }).n;
+  const library = {
+    problems: count('SELECT COUNT(*) AS n FROM problems WHERE deleted_at IS NULL'),
+    materials: count('SELECT COUNT(*) AS n FROM materials WHERE deleted_at IS NULL'),
+    inbox: count("SELECT COUNT(*) AS n FROM materials WHERE deleted_at IS NULL AND status = 'inbox'"),
+  };
+  const table = ownerTable(kind);
+  const col = ownerColumn(kind);
+  const pairs = db
+    .prepare(
+      `SELECT x.${col} AS owner, t.id, t.name FROM ${tagTable(kind)} x
+       JOIN tags t ON t.id = x.tag_id JOIN ${table} e ON e.id = x.${col} WHERE e.deleted_at IS NULL`,
+    )
+    .all() as { owner: string; id: string; name: string }[];
+  const direct = new Map<string, { id: string; name: string; count: number }>();
+  const subtree = new Map<string, Set<string>>();
+  for (const p of pairs) {
+    const d = direct.get(p.id) ?? { id: p.id, name: p.name, count: 0 };
+    d.count++;
+    direct.set(p.id, d);
+    const key = tagKey(p.name);
+    if (!key) continue;
+    for (const k of ancestorKeys(key)) {
+      let set = subtree.get(k);
+      if (!set) subtree.set(k, (set = new Set()));
+      set.add(p.owner);
+    }
+  }
+  const tagTreeCounts: Record<string, number> = {};
+  for (const [k, set] of subtree) tagTreeCounts[k] = set.size;
+  const untagged = count(
+    `SELECT COUNT(*) AS n FROM ${table} e WHERE e.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM ${tagTable(kind)} x WHERE x.${col} = e.id)`,
+  );
+  const values = (column: 'subject' | 'stage'): NavCountDTO[] => {
+    const dictOrder = (
+      db.prepare('SELECT value FROM dict_entries WHERE kind = ? ORDER BY position, value').all(column) as { value: string }[]
+    ).map((r) => r.value);
+    const rows = db
+      .prepare(`SELECT ${column} AS value, COUNT(*) AS count FROM ${table} WHERE deleted_at IS NULL AND ${column} IS NOT NULL GROUP BY ${column}`)
+      .all() as NavCountDTO[];
+    const rank = (v: string) => {
+      const i = dictOrder.indexOf(v);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return rows.sort((a, b) => rank(a.value) - rank(b.value) || a.value.localeCompare(b.value, 'zh-Hans-CN'));
+  };
+  return {
+    library,
+    tags: [...direct.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')),
+    tagTreeCounts,
+    untagged,
+    subjects: values('subject'),
+    stages: values('stage'),
+    noSubject: count(`SELECT COUNT(*) AS n FROM ${table} WHERE deleted_at IS NULL AND subject IS NULL`),
+    noStage: count(`SELECT COUNT(*) AS n FROM ${table} WHERE deleted_at IS NULL AND stage IS NULL`),
+    properties: navPropertyCounts(db, kind, table),
+  };
 }
 
 function firstTextSummary(db: DB, col: 'problem_id' | 'material_id', id: string): string {

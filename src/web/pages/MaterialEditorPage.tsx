@@ -4,19 +4,20 @@ import type { MaterialDTO, ProblemDTO, SaveResult } from '@shared/api';
 import type { MaterialStatus } from '@shared/constants';
 import { AttributeBar } from '../components/AttributeBar';
 import { BlocksEditor, type ContentIO } from '../components/BlocksEditor';
-import { ConflictDialog, RawInputsPanel } from '../components/EditorExtras';
+import { ChangedElsewhereBanner, ConflictDialog, RawInputsPanel } from '../components/EditorExtras';
 import { SaveBar, useSaveShortcut } from '../components/SaveBar';
-import { ErrorBox, Spinner, useToast } from '../components/ui';
+import { ErrorBox, Spinner, useConfirm, useToast } from '../components/ui';
 import { errorMessage, sendJSON } from '../lib/api';
 import { cloneWithNewIds, draftAsText, emptyMaterialDraft, isDraftEmpty, materialDraftFromDTO, materialPayload, type MaterialDraft } from '../lib/draft';
 import { formatTime, newId } from '../lib/format';
 import { Link, useLeaveGuard, useRouter } from '../lib/router';
-import { refreshCatalog } from '../lib/useCatalog';
+import { invalidateWrites } from '../lib/queryClient';
 import { useEntityEditor } from '../lib/useEntityEditor';
 
 export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; isNew: boolean; initialStatus: MaterialStatus }) {
   const { navigate } = useRouter();
   const toast = useToast();
+  const confirm = useConfirm();
   const ed = useEntityEditor<MaterialDraft, MaterialDTO>({
     collection: 'materials',
     id,
@@ -39,7 +40,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
   const canSave = ed.phase === 'ready' && (ed.dirty || ed.saveState.kind === 'error') && !(ed.isNew() && isDraftEmpty(draft));
   const doSave = useCallback(async () => {
     if (!canSave) return;
-    if (await ed.save()) void refreshCatalog();
+    await ed.save();
   }, [canSave, ed]);
   useSaveShortcut(() => void doSave());
 
@@ -58,6 +59,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
       // 保持资料中的顺序
       const blockIds = draft.blocks.filter((b) => selected.has(b.id)).map((b) => b.id);
       await sendJSON<SaveResult<ProblemDTO>>('POST', `/api/materials/${id}/derive`, { problemId: pid, blockIds, markMaterialActive: markActive });
+      invalidateWrites({ problems: [pid], materials: [id] });
       toast('已从资料建立题目，资料本身保持不变', 'success');
       navigate(`/problems/${pid}`, { force: true });
     } catch (err) {
@@ -87,9 +89,10 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
               type="button"
               className="btn btn-ghost btn-sm hover:!text-terracotta"
               onClick={async () => {
-                if (!window.confirm('把这份资料移到回收站？由它建立的题目不受影响。')) return;
+                if (!(await confirm({ title: '移到回收站', message: '把这份资料移到回收站？由它建立的题目不受影响。', confirmLabel: '移到回收站', danger: true }))) return;
                 try {
                   await sendJSON('DELETE', `/api/materials/${id}`);
+                  invalidateWrites({ materials: [id] });
                   toast('已移到回收站', 'info');
                   navigate('/materials', { force: true });
                 } catch (err) {
@@ -102,6 +105,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
           ) : null
         }
       />
+      {ed.changedElsewhere ? <ChangedElsewhereBanner noun="份资料" onReload={() => void ed.reload()} /> : null}
       {deleted ? (
         <div className="mb-4">
           <ErrorBox message="这份资料在回收站中，恢复后才能编辑。" />
@@ -110,6 +114,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
             className="btn btn-sage mt-2"
             onClick={async () => {
               await sendJSON('POST', `/api/materials/${id}/restore`);
+              invalidateWrites({ materials: [id] });
               await ed.reload();
             }}
           >
@@ -122,6 +127,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
           draft={draft}
           setDraft={setDraft}
           titlePlaceholder="资料标题（可选）"
+          kind="materials"
           status={draft.status}
           onStatus={(s) => setDraft((d) => ({ ...d, status: s }))}
         />
@@ -204,6 +210,7 @@ export function MaterialEditorPage({ id, isNew, initialStatus }: { id: string; i
           const nid = newId();
           try {
             await sendJSON('POST', '/api/materials', { id: nid, ...materialPayload(cloneWithNewIds(draft)) });
+            invalidateWrites({ materials: [nid] });
             navigate(`/materials/${nid}`, { force: true });
           } catch (err) {
             toast(errorMessage(err), 'error');

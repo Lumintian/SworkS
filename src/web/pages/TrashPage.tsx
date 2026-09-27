@@ -4,6 +4,8 @@ import type { TrashDTO } from '@shared/api';
 import { NOTE_TYPE_LABELS } from '@shared/constants';
 import { EmptyState, ErrorBox, PageHeader, Spinner, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
+import { runBatch } from '../lib/batch';
+import { invalidateWrites } from '../lib/queryClient';
 import { formatTime } from '../lib/format';
 import { Link } from '../lib/router';
 
@@ -21,11 +23,29 @@ export function TrashPage() {
     try {
       await sendJSON('POST', url);
       toast(`${what}已恢复`, 'success');
+      invalidateWrites();
       load();
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
   };
+
+  const restoreAll = async (collection: 'problems' | 'materials', ids: string[]) => {
+    try {
+      const r = await runBatch(collection, ids, { op: 'restore' });
+      toast(`已恢复 ${r.changed.length} ${collection === 'problems' ? '道题' : '份资料'}`, 'success');
+      load();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  const restoreAllButton = (collection: 'problems' | 'materials', ids: string[]) =>
+    ids.length > 1 ? (
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => void restoreAll(collection, ids)}>
+        <RotateCcw size={14} /> 全部恢复（{ids.length}）
+      </button>
+    ) : null;
 
   if (error) return <ErrorBox message={error} onRetry={load} />;
   if (!data) return <Spinner />;
@@ -36,7 +56,13 @@ export function TrashPage() {
       {empty ? <EmptyState title="回收站是空的" /> : null}
       {data.problems.length > 0 ? (
         <section className="space-y-2">
-          <h2 className="font-semibold text-stone">题目</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold text-stone">题目</h2>
+            {restoreAllButton(
+              'problems',
+              data.problems.map((p) => p.id),
+            )}
+          </div>
           <ul className="space-y-2">
             {data.problems.map((p) => (
               <li key={p.id} className="card-flat flex flex-wrap items-center gap-3 px-4 py-2.5">
@@ -83,7 +109,13 @@ export function TrashPage() {
       ) : null}
       {data.materials.length > 0 ? (
         <section className="space-y-2">
-          <h2 className="font-semibold text-stone">资料</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold text-stone">资料</h2>
+            {restoreAllButton(
+              'materials',
+              data.materials.map((m) => m.id),
+            )}
+          </div>
           <ul className="space-y-2">
             {data.materials.map((m) => (
               <li key={m.id} className="card-flat flex flex-wrap items-center gap-3 px-4 py-2.5">

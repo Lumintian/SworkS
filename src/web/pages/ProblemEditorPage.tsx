@@ -3,21 +3,24 @@ import { Download, Trash2 } from 'lucide-react';
 import type { ProblemDTO, SaveResult } from '@shared/api';
 import { AttributeBar } from '../components/AttributeBar';
 import { BlocksEditor, useMarkdownImageUpload, type ContentIO } from '../components/BlocksEditor';
-import { ConflictDialog, RawInputsPanel, SourcesEditor } from '../components/EditorExtras';
+import { ChangedElsewhereBanner, ConflictDialog, RawInputsPanel, SourcesEditor } from '../components/EditorExtras';
 import { NotesEditor } from '../components/NotesEditor';
 import { SaveBar, useSaveShortcut } from '../components/SaveBar';
-import { ErrorBox, Spinner, useToast } from '../components/ui';
-import { errorMessage, postForBlob, saveBlob, sendJSON } from '../lib/api';
+import { AttemptLog } from '../components/students/AttemptLog';
+import { ErrorBox, Spinner, useConfirm, useToast } from '../components/ui';
+import { errorMessage, sendJSON } from '../lib/api';
+import { exportProblems } from '../lib/exportMarkdown';
 import { cloneWithNewIds, draftAsText, emptyProblemDraft, isDraftEmpty, problemDraftFromDTO, problemPayload, type ProblemDraft } from '../lib/draft';
 import { formatTime, newId } from '../lib/format';
 import { Link, useLeaveGuard, useRouter } from '../lib/router';
-import { refreshCatalog } from '../lib/useCatalog';
+import { invalidateWrites } from '../lib/queryClient';
 import { useEntityEditor } from '../lib/useEntityEditor';
 import { MarkdownAssetsContext } from '../markdown/MarkdownView';
 
 export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean }) {
   const { navigate } = useRouter();
   const toast = useToast();
+  const confirm = useConfirm();
   const ed = useEntityEditor<ProblemDraft, ProblemDTO>({
     collection: 'problems',
     id,
@@ -39,8 +42,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
   const canSave = ed.phase === 'ready' && (ed.dirty || ed.saveState.kind === 'error') && !(ed.isNew() && isDraftEmpty(draft));
   const doSave = useCallback(async () => {
     if (!canSave) return;
-    const ok = await ed.save();
-    if (ok) void refreshCatalog();
+    await ed.save();
   }, [canSave, ed]);
   useSaveShortcut(() => void doSave());
 
@@ -48,6 +50,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
     const nid = newId();
     try {
       await sendJSON<SaveResult<ProblemDTO>>('POST', '/api/problems', { id: nid, ...problemPayload(cloneWithNewIds(draft)) });
+      invalidateWrites({ problems: [nid] });
       toast('已另存为新题目', 'success');
       navigate(`/problems/${nid}`, { force: true });
     } catch (err) {
@@ -86,14 +89,8 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
                 className="btn btn-ghost btn-sm"
                 title={ed.dirty ? '导出的是已保存的版本' : '导出为 Markdown'}
                 onClick={async () => {
-                  try {
-                    const r = await postForBlob('/api/export/markdown', { problemIds: [id] });
-                    saveBlob(r.blob, r.fileName);
-                    const w = Number(r.headers.get('x-sworks-export-warnings') ?? 0);
-                    toast(w > 0 ? `已导出，但有 ${w} 条警告（见压缩包内 README）` : '已导出 Markdown', w > 0 ? 'warn' : 'success');
-                  } catch (err) {
-                    toast(errorMessage(err), 'error');
-                  }
+                  const r = await exportProblems([id]);
+                  toast(r.message, r.tone);
                 }}
               >
                 <Download size={15} /> 导出
@@ -102,9 +99,10 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
                 type="button"
                 className="btn btn-ghost btn-sm hover:!text-terracotta"
                 onClick={async () => {
-                  if (!window.confirm('把这道题移到回收站？之后可以在回收站恢复。')) return;
+                  if (!(await confirm({ title: '移到回收站', message: '把这道题移到回收站？之后可以在回收站恢复。', confirmLabel: '移到回收站', danger: true }))) return;
                   try {
                     await sendJSON('DELETE', `/api/problems/${id}`);
+                  invalidateWrites({ problems: [id] });
                     toast('已移到回收站', 'info');
                     navigate('/problems', { force: true });
                   } catch (err) {
@@ -119,6 +117,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
         }
       />
 
+      {ed.changedElsewhere ? <ChangedElsewhereBanner noun="道题" onReload={() => void ed.reload()} /> : null}
       {deleted ? (
         <div className="mb-4">
           <ErrorBox message="这道题在回收站中，恢复后才能编辑。" />
@@ -127,6 +126,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
             className="btn btn-sage mt-2"
             onClick={async () => {
               await sendJSON('POST', `/api/problems/${id}/restore`);
+              invalidateWrites({ problems: [id] });
               await ed.reload();
               toast('已恢复', 'success');
             }}
@@ -137,7 +137,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
       ) : null}
 
       <div className="space-y-8" inert={deleted || undefined}>
-        <AttributeBar draft={draft} setDraft={setDraft} titlePlaceholder="标题（可选，留空也能保存）" />
+        <AttributeBar draft={draft} setDraft={setDraft} kind="problems" titlePlaceholder="标题（可选，留空也能保存）" />
 
         <section aria-labelledby="content-h" className="space-y-3">
           <h2 id="content-h" className="text-lg font-semibold text-stone">
@@ -159,6 +159,13 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
           <MarkdownAssetsContext.Provider value={{ remoteImageUrls: ed.refs.remoteImageUrls, remoteImages: ed.refs.remoteImages }}>
             <NotesEditor notes={draft.notes} onChange={(u) => setDraft((d) => ({ ...d, notes: u(d.notes) }))} onImageFiles={uploadMd} />
           </MarkdownAssetsContext.Provider>
+        </section>
+
+        <section aria-labelledby="attempts-h" className="space-y-3">
+          <h2 id="attempts-h" className="text-lg font-semibold text-stone">
+            作答记录
+          </h2>
+          <AttemptLog problemId={id} disabled={ed.isNew() || !entity} />
         </section>
 
         <section aria-labelledby="sources-h" className="space-y-3">

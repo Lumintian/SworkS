@@ -1,14 +1,18 @@
+import { QueryClientProvider } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { MATERIAL_STATUSES, type MaterialStatus } from '@shared/constants';
 import { isUuid } from '@shared/assetRef';
 import { Layout } from './components/Layout';
-import { EmptyState, ToastProvider } from './components/ui';
+import { ConfirmProvider, EmptyState, ToastProvider } from './components/ui';
 import { newId } from './lib/format';
+import { queryClient } from './lib/queryClient';
 import { matchPath, RouterProvider, useRouter } from './lib/router';
 import { AboutPage } from './pages/AboutPage';
 import { BackupPage } from './pages/BackupPage';
 import { InboxPage, MaterialsPage, ProblemsPage } from './pages/ListPages';
+import { ManagePage } from './pages/ManagePage';
 import { MaterialEditorPage } from './pages/MaterialEditorPage';
+import { StudentPage, StudentsPage } from './pages/StudentPages';
 import { ProblemEditorPage } from './pages/ProblemEditorPage';
 import { TrashPage } from './pages/TrashPage';
 
@@ -31,6 +35,8 @@ function Routes() {
   if (path === '/trash') return <TrashPage />;
   if (path === '/backup') return <BackupPage />;
   if (path === '/about') return <AboutPage />;
+  if (path === '/manage') return <ManagePage />;
+  if (path === '/students') return <StudentsPage />;
   if (isNewRoute) {
     if (!newIdParam || !isUuid(newIdParam)) return null;
     const status = params.get('status');
@@ -47,6 +53,8 @@ function Routes() {
   }
   const p = matchPath('/problems/:id', path);
   if (p && isUuid(p.id!)) return <ProblemEditorPage key={p.id} id={p.id!} isNew={false} />;
+  const st = matchPath('/students/:id', path);
+  if (st && isUuid(st.id!)) return <StudentPage key={st.id} id={st.id!} />;
   const m = matchPath('/materials/:id', path);
   if (m && isUuid(m.id!)) return <MaterialEditorPage key={m.id} id={m.id!} isNew={false} initialStatus="active" />;
   return <EmptyState title="页面不存在">请从左侧导航进入。</EmptyState>;
@@ -54,12 +62,16 @@ function Routes() {
 
 export function App() {
   return (
-    <RouterProvider>
-      <ToastProvider>
-        <Layout>
-          <Routes />
-        </Layout>
-      </ToastProvider>
-    </RouterProvider>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider>
+        <ToastProvider>
+          <ConfirmProvider>
+            <Layout>
+              <Routes />
+            </Layout>
+          </ConfirmProvider>
+        </ToastProvider>
+      </RouterProvider>
+    </QueryClientProvider>
   );
 }

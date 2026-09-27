@@ -7,6 +7,8 @@ import { AppError } from '../errors.js';
 import { fsyncDir, fsyncFile, timestampForFile } from '../fsutil.js';
 import { integrityCheck, nowIso, type DB } from './connection.js';
 import { SCHEMA_V1 } from './schema-v1.js';
+import { migrateV2 } from './schema-v2.js';
+import { SCHEMA_V3 } from './schema-v3.js';
 
 export interface Migration {
   version: number;
@@ -24,6 +26,16 @@ export const MIGRATIONS: Migration[] = [
       DEFAULT_SUBJECTS.forEach((v, i) => insert.run('subject', v, i));
       DEFAULT_STAGES.forEach((v, i) => insert.run('stage', v, i));
     },
+  },
+  {
+    version: 2,
+    name: 'properties',
+    up: migrateV2,
+  },
+  {
+    version: 3,
+    name: 'students',
+    up: (db) => db.exec(SCHEMA_V3),
   },
 ];
 
@@ -45,9 +57,19 @@ export function schemaVersion(db: DB): number {
  */
 export async function migrate(
   db: DB,
-  opts: { backupsDir: string; tmpDir: string; migrations?: Migration[] },
+  opts: {
+    backupsDir: string;
+    tmpDir: string;
+    migrations?: Migration[];
+    /** 只升级到这个版本（恢复旧版本备份时先建出对应版本的库） */
+    targetVersion?: number;
+    /** 是否在升级已有库前写安全备份；恢复用的临时库不需要 */
+    safetyBackup?: boolean;
+  },
 ): Promise<MigrationResult> {
-  const migrations = opts.migrations ?? MIGRATIONS;
+  const all = opts.migrations ?? MIGRATIONS;
+  const migrations = opts.targetVersion === undefined ? all : all.filter((m) => m.version <= opts.targetVersion!);
+  if (migrations.length === 0) throw new AppError('INTERNAL', `没有 v${opts.targetVersion} 的迁移`);
   const latest = migrations[migrations.length - 1]!.version;
   const current = schemaVersion(db);
   if (current > latest) {
@@ -59,7 +81,7 @@ export async function migrate(
   if (current === latest) return { from: current, to: current, safetyBackup: null };
 
   let safetyBackup: string | null = null;
-  if (current > 0) {
+  if (current > 0 && opts.safetyBackup !== false) {
     safetyBackup = await safetyBackupBeforeMigration(db, current, latest, opts.backupsDir, opts.tmpDir);
   }
 

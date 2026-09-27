@@ -13,7 +13,7 @@ import { AppError } from '../errors.js';
 import { dirIsEmptyOrMissing, fsyncDir } from '../fsutil.js';
 import { dataPaths, LOCK_FILE } from '../paths.js';
 import { sha256File } from './assetStore.js';
-import { TABLE_ORDER, validateBackup, type Manifest, type Records } from './backupFormat.js';
+import { tableOrderFor, validateBackup, type Manifest, type Records } from './backupFormat.js';
 import { reindexAll } from './search.js';
 
 export interface RestoreResult {
@@ -73,14 +73,17 @@ export async function restoreBackup(
     // 3. 重建数据库
     log('重建数据库…');
     const db = openDatabase(stagePaths.db);
+    const tables = tableOrderFor(manifest.backupSchemaVersion);
     try {
-      await migrate(db, { backupsDir: stagePaths.backups, tmpDir: stagePaths.tmp });
-      insertRecords(db, records.tables);
+      // 先建出与备份相同版本的库写入记录，再走正常的迁移链升级到当前版本
+      await migrate(db, { backupsDir: stagePaths.backups, tmpDir: stagePaths.tmp, targetVersion: manifest.dbSchemaVersion, safetyBackup: false });
+      insertRecords(db, tables, records.tables);
+      await migrate(db, { backupsDir: stagePaths.backups, tmpDir: stagePaths.tmp, safetyBackup: false });
       const fkProblems = db.pragma('foreign_key_check') as unknown[];
       if (fkProblems.length > 0) throw new AppError('BACKUP_INVALID', `备份记录存在无效引用（${fkProblems.length} 处）`);
       reindexAll(db);
-      // 4. 校验数量、引用与附件哈希
-      for (const t of TABLE_ORDER) {
+      // 4. 校验数量、引用与附件哈希（按备份自身的表集合核对）
+      for (const t of tables) {
         const n = (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
         if (n !== manifest.counts[t]) throw new AppError('BACKUP_INVALID', `恢复后 ${t} 数量不一致`);
       }
@@ -104,7 +107,7 @@ export async function restoreBackup(
     await fsp.rename(stage, target);
     await fsyncDir(parent);
     const counts: Record<string, number> = {};
-    for (const t of TABLE_ORDER) counts[t] = records.tables[t].length;
+    for (const t of tables) counts[t] = (records.tables as Record<string, unknown[]>)[t]!.length;
     return { dataDir: target, manifest, counts, assetFiles: manifest.assets.length };
   } catch (err) {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => undefined);
@@ -112,17 +115,23 @@ export async function restoreBackup(
   }
 }
 
-function insertRecords(db: ReturnType<typeof openDatabase>, tables: Records): void {
-  db.transaction(() => {
-    // 新库初始化写入的默认字典与库元信息由备份内容替换
-    db.prepare('DELETE FROM dict_entries').run();
-    db.prepare('DELETE FROM library_meta').run();
-    for (const t of TABLE_ORDER) {
-      const rows = tables[t] as Record<string, unknown>[];
-      if (rows.length === 0) continue;
-      const cols = Object.keys(rows[0]!);
-      const stmt = db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map((c) => `@${c}`).join(', ')})`);
-      for (const row of rows) stmt.run(row);
-    }
-  })();
+function insertRecords(db: ReturnType<typeof openDatabase>, tables: string[], records: Records): void {
+  try {
+    db.transaction(() => {
+      // 自引用的树（属性选项）可能子节点先于父节点写入：外键检查推迟到提交时
+      db.pragma('defer_foreign_keys = ON');
+      // 新库初始化写入的默认字典、库元信息与预置属性等，统一由备份内容替换
+      for (const t of [...tables].reverse()) db.prepare(`DELETE FROM ${t}`).run();
+      for (const t of tables) {
+        const rows = (records as Record<string, Record<string, unknown>[]>)[t] ?? [];
+        if (rows.length === 0) continue;
+        const cols = Object.keys(rows[0]!);
+        const stmt = db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map((c) => `@${c}`).join(', ')})`);
+        for (const row of rows) stmt.run(row);
+      }
+    })();
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError('BACKUP_INVALID', `备份记录无法写入：${(err as Error).message}`, { cause: err });
+  }
 }

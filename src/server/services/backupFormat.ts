@@ -1,6 +1,7 @@
 /**
- * 完整备份交换格式 v1（manifest.json + records.json + assets/ + README.txt）。
+ * 完整备份交换格式（manifest.json + records.json + assets/ + README.txt）。
  * 详见 docs/backup-format.md。恢复与备份自检共用这里的校验逻辑。
+ * 每个备份格式版本对应一个数据库 schema 版本与一组表；旧版本的表定义冻结不改，恢复时按版本校验。
  */
 import { z } from 'zod';
 import { APP_VERSION } from '../../shared/constants.js';
@@ -14,7 +15,7 @@ import { createHash } from 'node:crypto';
 
 export const BACKUP_FORMAT = 'sworks-backup';
 export const RECORDS_FORMAT = 'sworks-records';
-export const BACKUP_SCHEMA_VERSION = 1;
+export const BACKUP_SCHEMA_VERSION = 3;
 
 const str = z.string();
 const nstr = z.string().nullable();
@@ -23,8 +24,8 @@ const uuid = z.uuid();
 const iso = z.string().min(10).max(40);
 const niso = iso.nullable();
 
-/** 按父表在前的顺序列出需要备份的表；search_index 为可重建投影，不备份。 */
-export const RECORD_TABLES = {
+/** v1 的表（冻结）：按父表在前的顺序；search_index 为可重建投影，不备份。 */
+export const RECORD_TABLES_V1 = {
   library_meta: z.object({ key: str, value: str }).strict(),
   dict_entries: z.object({ kind: z.enum(['subject', 'stage']), value: str, position: int }).strict(),
   assets: z
@@ -129,8 +130,104 @@ export const RECORD_TABLES = {
     .strict(),
 } as const;
 
+const bool01 = z.union([z.literal(0), z.literal(1)]);
+
+/** v2：v1 加上自定义属性（定义、选项树、取值）。 */
+export const RECORD_TABLES_V2 = {
+  ...RECORD_TABLES_V1,
+  property_defs: z
+    .object({
+      id: uuid,
+      name: str,
+      type: z.enum(['text', 'number', 'date', 'checkbox', 'select', 'multiselect']),
+      nested: bool01,
+      applies_problem: bool01,
+      applies_material: bool01,
+      preset: nstr,
+      position: int,
+      show_in_nav: bool01,
+      created_at: iso,
+      updated_at: iso,
+      archived_at: niso,
+    })
+    .strict(),
+  property_options: z
+    .object({
+      id: uuid,
+      property_id: uuid,
+      parent_id: uuid.nullable(),
+      label: str,
+      position: int,
+      created_at: iso,
+      updated_at: iso,
+      deleted_at: niso,
+    })
+    .strict(),
+  property_values: z
+    .object({
+      problem_id: uuid.nullable(),
+      material_id: uuid.nullable(),
+      property_id: uuid,
+      option_id: uuid.nullable(),
+      text_value: nstr,
+      number_value: z.number().nullable(),
+    })
+    .strict(),
+} as const;
+
+/** v3：v2 加上学生与作答记录。 */
+export const RECORD_TABLES_V3 = {
+  ...RECORD_TABLES_V2,
+  students: z
+    .object({
+      id: uuid,
+      name: str,
+      stage: nstr,
+      note: nstr,
+      created_at: iso,
+      updated_at: iso,
+      archived_at: niso,
+      write_version: int.min(1),
+    })
+    .strict(),
+  student_attempts: z
+    .object({
+      id: uuid,
+      student_id: uuid,
+      problem_id: uuid,
+      attempted_at: iso,
+      result: z.enum(['correct', 'partial', 'wrong', 'blank']),
+      felt_difficulty: int.min(1).max(5).nullable(),
+      duration_sec: int.min(0).nullable(),
+      note: nstr,
+      created_at: iso,
+      updated_at: iso,
+      deleted_at: niso,
+    })
+    .strict(),
+} as const;
+
+/** 当前版本写出的表。 */
+export const RECORD_TABLES = RECORD_TABLES_V3;
+
+type TableSchemas = Record<string, z.ZodType>;
+
+/** 备份格式版本 → 对应的数据库 schema 版本与表集合。只增不改。 */
+export const BACKUP_VERSIONS: Record<number, { dbSchemaVersion: number; tables: TableSchemas }> = {
+  1: { dbSchemaVersion: 1, tables: RECORD_TABLES_V1 },
+  2: { dbSchemaVersion: 2, tables: RECORD_TABLES_V2 },
+  3: { dbSchemaVersion: 3, tables: RECORD_TABLES_V3 },
+};
+
 export type RecordTable = keyof typeof RECORD_TABLES;
 export const TABLE_ORDER = Object.keys(RECORD_TABLES) as RecordTable[];
+
+/** 某个备份格式版本的表顺序（父表在前）。 */
+export function tableOrderFor(backupSchemaVersion: number): string[] {
+  const v = BACKUP_VERSIONS[backupSchemaVersion];
+  if (!v) throw new AppError('BACKUP_UNSUPPORTED', `不支持的备份格式版本 v${backupSchemaVersion}`);
+  return Object.keys(v.tables);
+}
 
 const ORDER_BY: Record<RecordTable, string> = {
   library_meta: 'key',
@@ -146,8 +243,17 @@ const ORDER_BY: Record<RecordTable, string> = {
   material_tags: 'material_id, tag_id',
   problem_material_links: 'problem_id, material_id',
   raw_inputs: 'captured_at, id',
+  property_defs: 'position, id',
+  property_options: 'property_id, created_at, id',
+  property_values: 'property_id, problem_id, material_id, option_id, text_value, number_value',
+  students: 'created_at, id',
+  student_attempts: 'attempted_at, id',
 };
 
+/**
+ * 记录内容。旧版本备份里不存在的表在校验后为空数组，
+ * 真正要写入与核对的表以 tableOrderFor(backupSchemaVersion) 为准。
+ */
 export type Records = { [K in RecordTable]: z.infer<(typeof RECORD_TABLES)[K]>[] };
 
 export interface RecordsFile {
@@ -274,7 +380,8 @@ export async function validateBackup(
         `备份格式版本 v${head.data.backupSchemaVersion}（数据库 v${head.data.dbSchemaVersion}）高于本程序支持的 v${BACKUP_SCHEMA_VERSION}（数据库 v${LATEST_SCHEMA_VERSION}），拒绝恢复。请使用更新版本的 SworkS。`,
       );
     }
-    if (head.data.backupSchemaVersion !== BACKUP_SCHEMA_VERSION || head.data.dbSchemaVersion !== LATEST_SCHEMA_VERSION) {
+    const known = BACKUP_VERSIONS[head.data.backupSchemaVersion];
+    if (!known || known.dbSchemaVersion !== head.data.dbSchemaVersion) {
       throw new AppError(
         'BACKUP_UNSUPPORTED',
         `不支持的备份版本 v${head.data.backupSchemaVersion}（数据库 v${head.data.dbSchemaVersion}），当前没有对应的迁移链。`,
@@ -345,14 +452,15 @@ function validateRecords(raw: unknown, manifest: Manifest): RecordsFile {
     .strict()
     .safeParse(raw);
   if (!head.success) throw new AppError('BACKUP_INVALID', 'records.json 结构无效或与清单版本不一致');
-  const tables = {} as Records;
+  const schemas = BACKUP_VERSIONS[manifest.backupSchemaVersion]!.tables;
+  const tables = Object.fromEntries(TABLE_ORDER.map((t) => [t, []])) as unknown as Records;
   for (const name of Object.keys(head.data.tables)) {
-    if (!(name in RECORD_TABLES)) throw new AppError('BACKUP_INVALID', `records.json 包含未知表：${name}`);
+    if (!(name in schemas)) throw new AppError('BACKUP_INVALID', `records.json 包含未知表：${name}`);
   }
-  for (const t of TABLE_ORDER) {
+  for (const t of Object.keys(schemas)) {
     const rows = head.data.tables[t];
     if (!rows) throw new AppError('BACKUP_INVALID', `records.json 缺少表：${t}`);
-    const schema = RECORD_TABLES[t];
+    const schema = schemas[t]!;
     const out: unknown[] = [];
     for (let i = 0; i < rows.length; i++) {
       const r = schema.safeParse(rows[i]);
@@ -375,11 +483,12 @@ function validateRecords(raw: unknown, manifest: Manifest): RecordsFile {
 export const BACKUP_README = `SworkS 完整备份
 ================
 
-这是 SworkS 的完整备份包，用于恢复与迁移，默认包含个人笔记与来源 URL，不是公开分享包。
+这是 SworkS 的完整备份包，用于恢复与迁移，包含个人笔记、来源 URL 与学生的作答记录，不是公开分享包。
 
 内容：
 - manifest.json   格式标识、版本、库 ID、记录与附件数量、校验信息、未归档远程图片摘要
-- records.json    全部逻辑记录（题目、资料、内容块、笔记、标签、属性、来源、原始输入、回收站状态等）
+- records.json    全部逻辑记录（题目、资料、内容块、笔记、标签、自定义属性与考点、来源、原始输入、
+                  学生与作答记录、回收站状态等）
 - assets/<sha256> 所有附件的原始字节（按内容哈希命名，类型见 records.json 中 assets 表）
 
 恢复（需先停止 SworkS 服务，并恢复到一个新的空目录）：

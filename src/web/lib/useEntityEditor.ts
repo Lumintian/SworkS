@@ -5,7 +5,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RemoteImageDTO, SaveResult } from '@shared/api';
 import { ApiError, errorMessage, getJSON, sendJSON } from './api';
+import { onWrite } from './broadcast';
 import { mergeRefs, emptyRefs, type Refs } from './draft';
+import { invalidateWrites } from './queryClient';
 
 export type SaveState =
   | { kind: 'idle' }
@@ -42,6 +44,8 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
   const [refs, setRefs] = useState<Refs>(emptyRefs);
   const [saveState, setSaveState] = useState<SaveState>({ kind: 'idle' });
   const [conflict, setConflict] = useState<{ currentVersion?: number; message: string } | null>(null);
+  /** 其他页面修改了这个对象，而本页还有未保存的修改（保存时会冲突） */
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
 
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -115,7 +119,9 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
       isNewRef.current = false;
       applyEntity(res.entity, false);
       setConflict(null);
+      setChangedElsewhere(false);
       setSaveState({ kind: 'saved', at: new Date() });
+      if (res.changed || wasNew) invalidateWrites({ [collection]: [id] });
       if (wasNew) o.onCreated?.(res.entity);
       return true;
     } catch (err) {
@@ -168,9 +174,29 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
   const reload = useCallback(async () => {
     rawInputIds.current = [];
     setConflict(null);
+    setChangedElsewhere(false);
     setSaveState({ kind: 'idle' });
     await load();
   }, [load]);
+
+  // 其他标签页的写入：没有未保存修改时静默刷新；有未保存修改时提示，而不是等到保存时才冲突
+  useEffect(
+    () =>
+      onWrite((ev, fromOtherTab) => {
+        if (!fromOtherTab || isNewRef.current || saving.current) return;
+        const scoped = ev.problems !== undefined || ev.materials !== undefined;
+        if (scoped && !(ev[collection] ?? []).includes(id)) return;
+        void getJSON<E>(`/api/${collection}/${id}`).then(
+          (e) => {
+            if (e.version === versionRef.current) return;
+            if (dirtyRef.current) setChangedElsewhere(true);
+            else applyEntity(e, true);
+          },
+          () => undefined,
+        );
+      }),
+    [applyEntity, collection, id],
+  );
 
   return {
     phase,
@@ -183,6 +209,7 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
     save,
     saveState,
     conflict,
+    changedElsewhere,
     dismissConflict: () => setConflict(null),
     reload,
     refs,

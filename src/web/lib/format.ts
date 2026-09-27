@@ -25,3 +25,15 @@ export function daysSince(iso: string | null | undefined): number | null {
 export function newId(): string {
   return crypto.randomUUID();
 }
+
+/** 列表按时间分组的标题：今天、昨天、前 7 天、前 30 天，更早按月。 */
+export function dateGroupLabel(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (days <= 0) return '今天';
+  if (days === 1) return '昨天';
+  if (days < 7) return '前 7 天';
+  if (days < 30) return '前 30 天';
+  return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1} 月` : `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
+}

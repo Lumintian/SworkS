@@ -1,5 +1,5 @@
 /** 编辑页的草稿模型：与服务端 DTO 互转，并生成用于比较“是否有未保存修改”的规范化载荷。 */
-import type { AssetDTO, BlockDTO, MaterialDTO, ProblemDTO, RemoteImageDTO } from '@shared/api';
+import type { AssetDTO, BlockDTO, MaterialDTO, ProblemDTO, PropertyValueDTO, RemoteImageDTO } from '@shared/api';
 import type { BlockKind, MaterialStatus, NoteType } from '@shared/constants';
 import { newId } from './format';
 
@@ -32,6 +32,8 @@ export interface BaseDraft {
   stage: string;
   sourceNote: string;
   tags: string[];
+  /** 自定义属性取值（与接口形式相同） */
+  properties: PropertyValueDTO[];
   blocks: DraftBlock[];
 }
 
@@ -86,6 +88,7 @@ export function problemDraftFromDTO(p: ProblemDTO): ProblemDraft {
     stage: p.stage ?? '',
     sourceNote: p.sourceNote ?? '',
     tags: [...p.tags],
+    properties: p.properties.map((v) => ({ ...v })),
     blocks: p.blocks.map(blockFromDTO),
     notes: p.notes.map((n) => ({ id: n.id, type: n.type, title: n.title ?? '', bodyMd: n.bodyMd })),
     sources: p.sources.map((s) => ({
@@ -104,17 +107,18 @@ export function materialDraftFromDTO(m: MaterialDTO): MaterialDraft {
     stage: m.stage ?? '',
     sourceNote: m.sourceNote ?? '',
     tags: [...m.tags],
+    properties: m.properties.map((v) => ({ ...v })),
     blocks: m.blocks.map(blockFromDTO),
     status: m.status,
   };
 }
 
 export function emptyProblemDraft(): ProblemDraft {
-  return { title: '', subject: '', stage: '', sourceNote: '', tags: [], blocks: [], notes: [], sources: [] };
+  return { title: '', subject: '', stage: '', sourceNote: '', tags: [], properties: [], blocks: [], notes: [], sources: [] };
 }
 
 export function emptyMaterialDraft(status: MaterialStatus): MaterialDraft {
-  return { title: '', subject: '', stage: '', sourceNote: '', tags: [], blocks: [], status };
+  return { title: '', subject: '', stage: '', sourceNote: '', tags: [], properties: [], blocks: [], status };
 }
 
 const short = (v: string) => (v.trim() === '' ? null : v.trim());
@@ -131,6 +135,23 @@ function normalizeTags(tags: string[]): string[] {
   return out.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN', { sensitivity: 'base' }));
 }
 
+/** 属性取值的规范化：按属性 ID 排序、去掉空值，多选的选项排序，保证“是否有未保存修改”的比较稳定。 */
+function propertiesPayload(values: PropertyValueDTO[]): PropertyValueDTO[] {
+  const out: PropertyValueDTO[] = [];
+  for (const v of values) {
+    if (v.optionIds !== undefined) {
+      if (v.optionIds.length) out.push({ propertyId: v.propertyId, optionIds: [...new Set(v.optionIds)].sort() });
+    } else if (v.text !== undefined) {
+      if (v.text.trim()) out.push({ propertyId: v.propertyId, text: v.text.trim() });
+    } else if (v.date !== undefined) {
+      if (v.date) out.push({ propertyId: v.propertyId, date: v.date });
+    } else if (v.number !== undefined) {
+      if (Number.isFinite(v.number)) out.push({ propertyId: v.propertyId, number: v.number });
+    } else if (v.checked) out.push({ propertyId: v.propertyId, checked: true });
+  }
+  return out.sort((a, b) => a.propertyId.localeCompare(b.propertyId));
+}
+
 function blockPayload(b: DraftBlock) {
   if (b.kind === 'image') {
     return { id: b.id, kind: b.kind, assetId: b.assetId, remoteImageId: b.remoteImageId, caption: short(b.caption) };
@@ -145,6 +166,7 @@ function basePayload(d: BaseDraft) {
     stage: short(d.stage),
     sourceNote: short(d.sourceNote),
     tags: normalizeTags(d.tags),
+    properties: propertiesPayload(d.properties),
     blocks: d.blocks.map(blockPayload),
   };
 }

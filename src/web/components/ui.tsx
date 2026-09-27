@@ -4,22 +4,28 @@ import { X } from 'lucide-react';
 // ---------------------------------------------------------------- Toast
 
 export type ToastTone = 'info' | 'success' | 'error' | 'warn';
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
 interface ToastItem {
   id: number;
   tone: ToastTone;
   message: string;
+  action?: ToastAction | undefined;
 }
 
-const ToastContext = createContext<(message: string, tone?: ToastTone) => void>(() => {});
+type ToastFn = (message: string, tone?: ToastTone, action?: ToastAction) => void;
+const ToastContext = createContext<ToastFn>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const seq = useRef(0);
-  const push = useCallback((message: string, tone: ToastTone = 'info') => {
+  const push = useCallback<ToastFn>((message, tone = 'info', action) => {
     const id = ++seq.current;
-    setItems((xs) => [...xs.slice(-3), { id, tone, message }]);
-    // 错误提示停留更久；成功提示立即出现，不做人为延迟
-    window.setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== id)), tone === 'error' ? 9000 : 3500);
+    setItems((xs) => [...xs.slice(-3), { id, tone, message, action }]);
+    // 错误提示与带“撤销”的提示停留更久；成功提示立即出现，不做人为延迟
+    window.setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== id)), tone === 'error' || action ? 9000 : 3500);
   }, []);
   const toneClass: Record<ToastTone, string> = {
     info: 'border-line bg-surface text-ink',
@@ -39,6 +45,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             style={{ borderRadius: 'var(--radius-organic-sm)' }}
           >
             <span className="flex-1">{t.message}</span>
+            {t.action ? (
+              <button
+                type="button"
+                className="link-btn text-sm"
+                onClick={() => {
+                  t.action!.onClick();
+                  setItems((xs) => xs.filter((x) => x.id !== t.id));
+                }}
+              >
+                {t.action.label}
+              </button>
+            ) : null}
             <button type="button" className="opacity-60 hover:opacity-100" aria-label="关闭提示" onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}>
               <X size={16} />
             </button>
@@ -106,6 +124,54 @@ export function Dialog({
       ) : null}
     </dialog>
   );
+}
+
+// ---------------------------------------------------------------- 确认对话框（替代 window.confirm）
+
+export interface ConfirmOptions {
+  title: string;
+  message: ReactNode;
+  confirmLabel?: string;
+  danger?: boolean;
+}
+
+type ConfirmFn = (o: ConfirmOptions) => Promise<boolean>;
+const ConfirmContext = createContext<ConfirmFn>(async () => false);
+
+export function ConfirmProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<(ConfirmOptions & { resolve: (v: boolean) => void }) | null>(null);
+  const confirm = useCallback<ConfirmFn>((o) => new Promise<boolean>((resolve) => setState({ ...o, resolve })), []);
+  const close = (v: boolean) => {
+    state?.resolve(v);
+    setState(null);
+  };
+  return (
+    <ConfirmContext.Provider value={confirm}>
+      {children}
+      <Dialog
+        open={state !== null}
+        onClose={() => close(false)}
+        title={state?.title ?? ''}
+        footer={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={() => close(false)}>
+              取消
+            </button>
+            <button type="button" className={`btn ${state?.danger ? 'btn-danger' : 'btn-primary'}`} onClick={() => close(true)} data-testid="confirm-ok" autoFocus>
+              {state?.confirmLabel ?? '确定'}
+            </button>
+          </>
+        }
+      >
+        <div className="text-sm leading-6 text-ink-soft">{state?.message}</div>
+      </Dialog>
+    </ConfirmContext.Provider>
+  );
+}
+
+/** 返回一个异步确认函数：用户点确定时 resolve(true)。 */
+export function useConfirm(): ConfirmFn {
+  return useContext(ConfirmContext);
 }
 
 // ---------------------------------------------------------------- 杂项

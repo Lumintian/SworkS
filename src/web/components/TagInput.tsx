@@ -1,5 +1,7 @@
 import { useId, useState } from 'react';
 import { X } from 'lucide-react';
+import { normalizeTagInput } from '@shared/tagPath';
+import { TagLabel } from './TagLabel';
 
 export function TagInput({ value, onChange, suggestions }: { value: string[]; onChange: (tags: string[]) => void; suggestions: string[] }) {
   const [text, setText] = useState('');
@@ -7,7 +9,7 @@ export function TagInput({ value, onChange, suggestions }: { value: string[]; on
   const add = (raw: string) => {
     const parts = raw
       .split(/[,，、\n]/)
-      .map((s) => s.replace(/\s+/g, ' ').trim())
+      .map((s) => normalizeTagInput(s))
       .filter(Boolean);
     if (parts.length === 0) return;
     const lower = new Set(value.map((v) => v.toLowerCase()));
@@ -24,8 +26,8 @@ export function TagInput({ value, onChange, suggestions }: { value: string[]; on
   return (
     <div className="input flex min-h-[2.4rem] flex-wrap items-center gap-1.5 py-1.5">
       {value.map((t) => (
-        <span key={t} className="chip">
-          {t}
+        <span key={t} className="chip" title={t}>
+          <TagLabel name={t} />
           <button type="button" aria-label={`移除标签 ${t}`} className="opacity-70 hover:opacity-100" onClick={() => onChange(value.filter((x) => x !== t))}>
             <X size={13} />
           </button>
@@ -35,7 +37,7 @@ export function TagInput({ value, onChange, suggestions }: { value: string[]; on
         className="min-w-[8rem] flex-1 bg-transparent text-sm outline-none placeholder:text-ink-faint"
         value={text}
         list={listId}
-        placeholder={value.length ? '继续添加…' : '输入标签，回车添加'}
+        placeholder={value.length ? '继续添加…' : '输入标签，回车添加；用 / 分层'}
         aria-label="添加标签"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

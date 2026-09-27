@@ -697,3 +697,174 @@
 .toast {
   animation: toast-in 0.18s ease-out;
 }
+
+/* 菜单、树、列表等组件样式放在 components 层，页面里的工具类可以覆盖它们 */
+@layer components {
+  /* ---------------------------------------------------------------- 菜单、弹出层、命令面板 */
+  .menu-content {
+    z-index: 60;
+    min-width: 11rem;
+    padding: 0.3rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-organic-sm);
+    box-shadow: var(--shadow-lift);
+    color: var(--color-ink);
+    font-size: 0.88rem;
+    animation: toast-in 0.12s ease-out;
+  }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem 0.35rem 0.3rem;
+    border-radius: 8px 10px 8px 11px;
+    cursor: pointer;
+    outline: none;
+    user-select: none;
+  }
+  .menu-item[data-highlighted] {
+    background: var(--color-stone-soft);
+    color: var(--color-stone);
+  }
+  .menu-item[data-disabled] {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .menu-item[data-danger] {
+    color: var(--color-terracotta);
+  }
+  .menu-item[data-danger][data-highlighted] {
+    background: var(--color-terracotta-soft);
+  }
+  .menu-separator {
+    height: 1px;
+    margin: 0.3rem 0.2rem;
+    background: var(--color-line);
+  }
+  .menu-label {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--color-ink-faint);
+  }
+
+  [cmdk-root] {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  [cmdk-input] {
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--color-line);
+    background: transparent;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.95rem;
+    outline: none;
+  }
+  [cmdk-list] {
+    max-height: min(56vh, 420px);
+    overflow-y: auto;
+    padding: 0.3rem;
+  }
+  [cmdk-group-heading] {
+    padding: 0.4rem 0.6rem 0.2rem;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--color-ink-faint);
+  }
+  [cmdk-item] {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.42rem 0.6rem;
+    border-radius: 8px 10px 8px 11px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  [cmdk-item][data-selected='true'] {
+    background: var(--color-stone-soft);
+    color: var(--color-stone);
+  }
+  [cmdk-empty] {
+    padding: 1rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--color-ink-faint);
+  }
+
+  /* ---------------------------------------------------------------- 导航树与列表 */
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    width: 100%;
+    min-height: 1.85rem;
+    padding: 0.1rem 0.45rem 0.1rem 0;
+    border-radius: 8px 10px 8px 11px;
+    color: var(--color-ink-soft);
+    font-size: 0.87rem;
+    text-align: left;
+  }
+  .tree-row:hover {
+    background: rgb(92 64 51 / 0.07);
+    color: var(--color-stone);
+  }
+  .tree-row[data-active='true'] {
+    background: var(--color-surface);
+    color: var(--color-stone);
+    font-weight: 700;
+    box-shadow: var(--shadow-soft);
+  }
+  .tree-row[data-drop='true'] {
+    background: var(--color-sage-soft);
+    outline: 1.5px dashed var(--color-sage);
+  }
+  .tree-row:focus-visible {
+    outline-offset: -2px;
+  }
+  .tree-count {
+    margin-left: auto;
+    padding-left: 0.4rem;
+    font-size: 0.74rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-ink-faint);
+  }
+  .nav-section-title {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--color-ink-faint);
+  }
+  .nav-section-title:hover {
+    color: var(--color-stone);
+  }
+  .list-row[data-focused='true'] {
+    border-color: var(--color-sage);
+    box-shadow: 0 0 0 2px rgb(139 157 119 / 0.3);
+  }
+  .list-row[data-selected='true'] {
+    background: color-mix(in srgb, var(--color-sage-soft) 60%, var(--color-surface));
+  }
+  .kbd {
+    display: inline-block;
+    min-width: 1.3rem;
+    padding: 0 0.3rem;
+    border: 1px solid var(--color-line-strong);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--color-surface);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.35rem;
+    text-align: center;
+    color: var(--color-ink-soft);
+  }
+}

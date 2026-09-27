@@ -9,6 +9,7 @@ import { assetUrl, errorMessage } from '../lib/api';
 import { newBlock, type DraftBlock, type Refs } from '../lib/draft';
 import { addRemoteImage, extFor, IMAGE_ACCEPT, importTextFile, isSingleUrl, manualRemoteImage, recordPastedText, retryRemoteImage, uploadImageFile } from '../lib/ingest';
 import { formatBytes } from '../lib/format';
+import { isEditableTarget } from '../lib/hotkeys';
 import { MarkdownAssetsContext } from '../markdown/MarkdownView';
 import { MarkdownField } from './MarkdownField';
 import { useToast } from './ui';
@@ -21,11 +22,6 @@ export interface ContentIO {
 }
 
 const KIND_LABEL = { markdown: 'Markdown', text: '文字（按原文显示）', image: '图片' } as const;
-
-function isEditableTarget(t: EventTarget | null): boolean {
-  if (!(t instanceof HTMLElement)) return false;
-  return Boolean(t.closest('input, textarea, select, [contenteditable="true"], .cm-editor'));
-}
 
 /** 上传图片并返回 Markdown 引用片段（供编辑器内粘贴图片使用）。 */
 export function useMarkdownImageUpload(io: ContentIO) {

@@ -1,120 +1,91 @@
-/** 题目/资料列表：关键词 + 学科 + 学段 + 多标签（AND）组合筛选，最近添加/最近修改排序，分页加载。 */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ImageOff, Search, X } from 'lucide-react';
-import type { ListItemDTO, ListResponse } from '@shared/api';
-import { MATERIAL_STATUS_LABELS, NOTE_TYPE_LABELS, PAGE_SIZE, SEARCH_FIELD_LABELS, type MaterialStatus, type SearchField } from '@shared/constants';
-import { assetUrl, errorMessage, getJSON } from '../lib/api';
-import { formatTime } from '../lib/format';
-import { Link, useRouter } from '../lib/router';
-import { useCatalog } from '../lib/useCatalog';
-import { EmptyState, ErrorBox, Spinner } from './ui';
+/**
+ * 题目/资料列表（参照 Notebook Navigator 的列表区）：
+ * 关键词 + 导航树筛选（标签子树、学科、学段），按时间分组，多选（勾选、Shift 连选、⌘/Ctrl+A、选择全部 N 项），
+ * 批量操作、右键菜单、快速预览（空格）与键盘导航；返回列表时恢复滚动位置与焦点。
+ */
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ChevronDown, Download, ExternalLink, Eye, Search, SquareCheck, Trash2, UserRound, X } from 'lucide-react';
+import type { ListItemDTO } from '@shared/api';
+import { hasActiveFilters, NONE_VALUE, TRUE_VALUE, type ListFilters } from '@shared/listFilters';
+import { ATTEMPT_FILTER_LABELS, ATTEMPT_FILTERS, MATERIAL_STATUS_LABELS, type MaterialStatus } from '@shared/constants';
+import { errorMessage } from '../lib/api';
+import { exportProblems } from '../lib/exportMarkdown';
+import { dateGroupLabel } from '../lib/format';
+import { hasOpenOverlay, isEditableTarget, MOD_LABEL, useKeydown } from '../lib/hotkeys';
+import { fetchAllIds, listParams, useInfiniteList, useListFilters, useStudents, type Collection } from '../lib/queries';
+import { useRouter } from '../lib/router';
+import { propertiesFor, useCatalog } from '../lib/useCatalog';
+import { useSelection } from '../lib/useSelection';
+import { BatchBar, useBatchRunner } from './list/BatchBar';
+import { ListRow } from './list/ListRow';
+import { TagLabel } from './TagLabel';
+import { QuickLook } from './list/QuickLook';
+import { ContextItem, ContextSeparator, DropdownContent, DropdownItem, DropdownMenu, DropdownSeparator, DropdownTrigger } from './Menu';
+import { EmptyState, ErrorBox, Spinner, useConfirm, useToast } from './ui';
 
-interface Filters {
-  q: string;
-  subject: string;
-  stage: string;
-  tags: string[];
-  sort: 'created' | 'updated';
-}
-
-function readFilters(search: string): Filters {
-  const p = new URLSearchParams(search);
-  return {
-    q: p.get('q') ?? '',
-    subject: p.get('subject') ?? '',
-    stage: p.get('stage') ?? '',
-    tags: (p.get('tags') ?? '').split(',').filter(Boolean),
-    sort: p.get('sort') === 'updated' ? 'updated' : 'created',
-  };
-}
-
-function writeFilters(f: Filters): string {
-  const p = new URLSearchParams();
-  if (f.q) p.set('q', f.q);
-  if (f.subject) p.set('subject', f.subject);
-  if (f.stage) p.set('stage', f.stage);
-  if (f.tags.length) p.set('tags', f.tags.join(','));
-  if (f.sort !== 'created') p.set('sort', f.sort);
-  const s = p.toString();
-  return s ? `?${s}` : '';
-}
-
-function HitBadges({ item }: { item: ListItemDTO }) {
-  if (item.hits.length === 0) return null;
-  const inNotes: SearchField[] = item.hits.filter((h) => h === 'note' || h === 'answer' || h === 'solution');
+function FilterChip({ label, onRemove }: { label: ReactNode; onRemove: () => void }) {
   return (
-    <span className="flex flex-wrap items-center gap-1 text-xs" data-testid="hit-badges">
-      {inNotes.length > 0 ? <span className="chip chip-clay">命中{inNotes.map((h) => SEARCH_FIELD_LABELS[h]).join('/')}</span> : null}
-      {item.hits
-        .filter((h) => !inNotes.includes(h))
-        .map((h) => (
-          <span key={h} className="chip chip-stone">
-            命中{SEARCH_FIELD_LABELS[h]}
-          </span>
-        ))}
+    <span className="chip chip-stone gap-1 py-0.5 pl-2.5 pr-1">
+      {label}
+      <button type="button" className="rounded-full p-0.5 opacity-70 hover:bg-white/60 hover:opacity-100" aria-label="移除这个筛选条件" onClick={onRemove}>
+        <X size={12} />
+      </button>
     </span>
   );
 }
 
-function Row({
-  item,
-  href,
-  placeholder,
-  selectable,
-  checked,
-  onCheck,
-}: {
-  item: ListItemDTO;
-  href: string;
-  placeholder: string;
-  selectable: boolean;
-  checked: boolean;
-  onCheck: () => void;
-}) {
+function FilterChips({ filters, setFilters, onClearAll }: { filters: ListFilters; setFilters: (f: ListFilters) => void; onClearAll: () => void }) {
+  const catalog = useCatalog();
+  if (!hasActiveFilters(filters)) return null;
+  const valueLabel = (kind: string, v: string) => (v === NONE_VALUE ? `${kind}：未设置` : `${kind}：${v}`);
   return (
-    <li className="card flex gap-3 px-3 py-3 transition-shadow hover:shadow-[var(--shadow-lift)] sm:gap-4 sm:px-4" data-testid="list-item">
-      {selectable ? (
-        <input type="checkbox" className="mt-1 h-4 w-4 flex-none accent-[var(--color-sage-deep)]" checked={checked} onChange={onCheck} aria-label={`选择 ${item.title ?? placeholder}`} />
-      ) : null}
-      <Link to={href} className="flex-none" tabIndex={-1} aria-hidden="true">
-        {item.firstImageAssetId ? (
-          <img className="thumb" src={assetUrl(item.firstImageAssetId)} alt="" loading="lazy" />
-        ) : (
-          <span className="thumb flex items-center justify-center text-ink-faint">{item.imageCount > 0 ? <ImageOff size={20} /> : <span className="font-serif text-2xl text-line-strong">¶</span>}</span>
-        )}
-      </Link>
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Link to={href} className={`truncate font-serif text-[1.02rem] font-semibold hover:underline ${item.title ? 'text-stone' : 'italic text-ink-soft'}`}>
-            {item.title ?? placeholder}
-          </Link>
-          {item.status ? <span className={`chip ${item.status === 'inbox' ? 'chip-warn' : 'chip-stone'}`}>{MATERIAL_STATUS_LABELS[item.status]}</span> : null}
-          <HitBadges item={item} />
-        </div>
-        <p className="line-clamp-2 text-sm text-ink-soft">{item.summary || (item.imageCount ? `${item.imageCount} 张图片` : '（无文字内容）')}</p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
-          {item.subject ? <span>{item.subject}</span> : null}
-          {item.stage ? <span>{item.stage}</span> : null}
-          {item.tags.map((t) => (
-            <span key={t} className="chip">
-              {t}
-            </span>
-          ))}
-          {item.noteCounts
-            ? (['answer', 'solution', 'note'] as const)
-                .filter((k) => item.noteCounts![k] > 0)
-                .map((k) => (
-                  <span key={k}>
-                    {NOTE_TYPE_LABELS[k]} {item.noteCounts![k]}
-                  </span>
-                ))
-            : null}
-          <span className="ml-auto">添加 {formatTime(item.createdAt)}</span>
-          <span>修改 {formatTime(item.updatedAt)}</span>
-        </div>
-      </div>
-    </li>
+    <div className="flex flex-wrap items-center gap-1.5 text-sm" aria-label="当前筛选条件">
+      {filters.q ? <FilterChip label={`关键词：${filters.q}`} onRemove={() => setFilters({ ...filters, q: '' })} /> : null}
+      {filters.tagPaths.map((p) => (
+        <FilterChip
+          key={p}
+          label={
+            <>
+              #<TagLabel name={p} />
+            </>
+          }
+          onRemove={() => setFilters({ ...filters, tagPaths: filters.tagPaths.filter((x) => x !== p) })}
+        />
+      ))}
+      {filters.tagIds.map((id) => (
+        <FilterChip
+          key={id}
+          label={`#${catalog.tags.find((t) => t.id === id)?.name ?? '标签'}`}
+          onRemove={() => setFilters({ ...filters, tagIds: filters.tagIds.filter((x) => x !== id) })}
+        />
+      ))}
+      {filters.untagged ? <FilterChip label="无标签" onRemove={() => setFilters({ ...filters, untagged: false })} /> : null}
+      {filters.attempt ? <FilterChip label={`作答：${ATTEMPT_FILTER_LABELS[filters.attempt]}`} onRemove={() => setFilters({ ...filters, attempt: '' })} /> : null}
+      {filters.props.map((pf) => {
+        const def = catalog.properties.find((d) => d.id === pf.propertyId);
+        const labels = pf.values.map((v) =>
+          v === NONE_VALUE ? '未设置' : v === TRUE_VALUE ? '是' : (def?.options.find((o) => o.id === v)?.path ?? '已删除的选项'),
+        );
+        return (
+          <FilterChip
+            key={pf.propertyId}
+            label={`${def?.name ?? '属性'}：${labels.join(' 或 ')}`}
+            onRemove={() => setFilters({ ...filters, props: filters.props.filter((x) => x.propertyId !== pf.propertyId) })}
+          />
+        );
+      })}
+      {filters.subject ? <FilterChip label={valueLabel('学科', filters.subject)} onRemove={() => setFilters({ ...filters, subject: '' })} /> : null}
+      {filters.stage ? <FilterChip label={valueLabel('学段', filters.stage)} onRemove={() => setFilters({ ...filters, stage: '' })} /> : null}
+      {filters.tagPaths.length + filters.tagIds.length > 1 ? <span className="text-xs text-ink-faint">同时包含全部所选标签</span> : null}
+      <button type="button" className="btn btn-ghost btn-sm ml-auto" onClick={onClearAll}>
+        <X size={14} /> 清除筛选
+      </button>
+    </div>
   );
+}
+
+function scrollKey(path: string, search: string) {
+  return `sworks.list.${path}${search}`;
 }
 
 export function EntityList({
@@ -123,73 +94,233 @@ export function EntityList({
   placeholder,
   emptyTitle,
   emptyHint,
-  selectionActions,
 }: {
-  collection: 'problems' | 'materials';
+  collection: Collection;
   status?: MaterialStatus;
   placeholder: string;
   emptyTitle: string;
   emptyHint: ReactNode;
-  selectionActions?: (ids: string[], clear: () => void) => ReactNode;
 }) {
   const { path, search, navigate } = useRouter();
-  const filters = useMemo(() => readFilters(search), [search]);
+  const toast = useToast();
+  const confirm = useConfirm();
+  const run = useBatchRunner(collection);
+  const [urlFilters, setFilters] = useListFilters();
+  const filters = useMemo(() => ({ ...urlFilters, status }), [urlFilters, status]);
+  const filterKey = listParams(filters);
+  const query = useInfiniteList(collection, filters);
   const [qInput, setQInput] = useState(filters.q);
-  const [items, setItems] = useState<ListItemDTO[]>([]);
-  const [total, setTotal] = useState(0);
-  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [error, setError] = useState('');
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const searchRef = useRef<HTMLInputElement>(null);
   const catalog = useCatalog();
-  const reqSeq = useRef(0);
-  const [reloadKey, setReloadKey] = useState(0);
+  const defsMap = useMemo(() => new Map(catalog.properties.map((d) => [d.id, d])), [catalog.properties]);
+  // 可以按选项顺序排序的属性：不分层的单选（例如难度、题型）
+  const sortDefs = propertiesFor(catalog, collection).filter((d) => d.type === 'select' && !d.nested);
+  const students = useStudents();
+  const student = urlFilters.student ? students.data?.find((s) => s.id === urlFilters.student) : undefined;
 
-  const setFilters = useCallback((f: Filters) => navigate(`${path}${writeFilters(f)}`, { replace: true }), [navigate, path]);
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ListItemDTO[] = [];
+    for (const page of query.data?.pages ?? []) {
+      for (const it of page.items) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        out.push(it);
+      }
+    }
+    return out;
+  }, [query.data]);
+  const total = query.data?.pages.at(-1)?.total ?? 0;
+  const ids = useMemo(() => items.map((i) => i.id), [items]);
+  const selection = useSelection(ids, filterKey);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [quickId, setQuickId] = useState<string | null>(null);
+  // 快速预览里切换到的项，关闭后作为列表焦点
+  useEffect(() => {
+    if (quickId) setFocusedId(quickId);
+  }, [quickId]);
 
-  const query = useCallback(
-    (offset: number) => {
-      const p = new URLSearchParams();
-      if (filters.q) p.set('q', filters.q);
-      if (filters.subject) p.set('subject', filters.subject);
-      if (filters.stage) p.set('stage', filters.stage);
-      if (filters.tags.length) p.set('tags', filters.tags.join(','));
-      if (status) p.set('status', status);
-      p.set('sort', filters.sort);
-      p.set('offset', String(offset));
-      p.set('limit', String(PAGE_SIZE));
-      return getJSON<ListResponse>(`/api/${collection}?${p.toString()}`);
+  // 关键词输入防抖；地址栏变化（例如点导航树、浏览器后退）时同步输入框
+  useEffect(() => setQInput(urlFilters.q), [urlFilters.q]);
+  useEffect(() => {
+    if (qInput.trim() === urlFilters.q) return;
+    const t = window.setTimeout(() => setFilters({ ...urlFilters, q: qInput.trim() }), 300);
+    return () => window.clearTimeout(t);
+  }, [qInput, urlFilters, setFilters]);
+
+  // 返回列表时恢复滚动位置与焦点
+  const restored = useRef(false);
+  const key = scrollKey(path, search);
+  useLayoutEffect(() => {
+    if (restored.current || items.length === 0) return;
+    restored.current = true;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) ?? 'null') as { y: number; focused: string | null } | null;
+      if (saved) {
+        if (saved.focused && ids.includes(saved.focused)) setFocusedId(saved.focused);
+        window.scrollTo(0, saved.y);
+      }
+    } catch {
+      // 会话存储不可用时从顶部开始
+    }
+  }, [items.length, ids, key]);
+  const focusRef = useRef(focusedId);
+  focusRef.current = focusedId;
+  useEffect(
+    () => () => {
+      try {
+        sessionStorage.setItem(key, JSON.stringify({ y: window.scrollY, focused: focusRef.current }));
+      } catch {
+        // 忽略
+      }
     },
-    [collection, filters, status],
+    [key],
   );
 
-  useEffect(() => {
-    const seq = ++reqSeq.current;
-    setPhase('loading');
-    query(0).then(
-      (r) => {
-        if (seq !== reqSeq.current) return;
-        setItems(r.items);
-        setTotal(r.total);
-        setPhase('ready');
-      },
-      (err) => {
-        if (seq !== reqSeq.current) return;
-        setError(errorMessage(err));
-        setPhase('error');
-      },
-    );
-  }, [query, reloadKey]);
+  const hrefOf = useCallback((id: string) => `/${collection}/${id}`, [collection]);
+  const moveFocus = (delta: number, extend: boolean) => {
+    if (ids.length === 0) return;
+    const i = focusedId ? ids.indexOf(focusedId) : -1;
+    const next = ids[Math.min(Math.max(i + delta, 0), ids.length - 1)]!;
+    setFocusedId(next);
+    if (extend) {
+      if (focusedId && !selection.has(focusedId)) selection.toggle(focusedId);
+      selection.selectRange(next);
+    }
+    document.querySelector(`[data-id="${next}"]`)?.scrollIntoView({ block: 'nearest' });
+  };
 
-  // 关键词输入防抖
-  useEffect(() => {
-    if (qInput === filters.q) return;
-    const t = window.setTimeout(() => setFilters({ ...filters, q: qInput.trim() }), 300);
-    return () => window.clearTimeout(t);
-  }, [qInput, filters, setFilters]);
+  useKeydown((e) => {
+    if (isEditableTarget(e.target) || hasOpenOverlay() || e.altKey) return false;
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'a') {
+      selection.setAll(ids);
+      return true;
+    }
+    if (mod) return false;
+    switch (e.key) {
+      case 'j':
+      case 'ArrowDown':
+        moveFocus(1, e.shiftKey);
+        return true;
+      case 'k':
+      case 'ArrowUp':
+        moveFocus(-1, e.shiftKey);
+        return true;
+      case 'Enter':
+        if (!focusedId) return false;
+        navigate(hrefOf(focusedId));
+        return true;
+      case 'x':
+        if (!focusedId) return false;
+        selection.toggle(focusedId);
+        return true;
+      case ' ':
+        if (!focusedId) return false;
+        setQuickId(focusedId);
+        return true;
+      case '/':
+        searchRef.current?.focus();
+        return true;
+      case 'Escape':
+        if (selection.selected.size === 0) return false;
+        selection.clear();
+        return true;
+      default:
+        return false;
+    }
+  });
 
-  const tagOptions = catalog.tags.filter((t) => (collection === 'problems' ? t.problemCount : t.materialCount) > 0 || filters.tags.includes(t.id));
-  const hasFilters = Boolean(filters.q || filters.subject || filters.stage || filters.tags.length);
+  const onCheck = useCallback(
+    (id: string, range: boolean) => (range ? selection.selectRange(id) : selection.toggle(id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection.selectRange, selection.toggle],
+  );
+  const selectedRef = useRef(selection.selected);
+  selectedRef.current = selection.selected;
+  const dragIdsFor = useCallback((id: string) => () => (selectedRef.current.has(id) ? [...selectedRef.current] : [id]), []);
+  const onTagClick = useCallback(
+    (name: string) => setFilters({ ...urlFilters, tagPaths: [name], tagIds: [], untagged: false }),
+    [setFilters, urlFilters],
+  );
+
+  const renderMenu = useCallback(
+    (id: string) => {
+      const target = selectedRef.current.has(id) ? [...selectedRef.current] : [id];
+      const many = target.length > 1;
+      const item = items.find((x) => x.id === id);
+      return (
+        <>
+          <ContextItem onSelect={() => navigate(hrefOf(id))}>
+            <ExternalLink size={14} /> 打开
+          </ContextItem>
+          <ContextItem onSelect={() => setQuickId(id)}>
+            <Eye size={14} /> 快速预览<span className="kbd ml-auto">空格</span>
+          </ContextItem>
+          <ContextItem onSelect={() => selection.toggle(id)}>
+            <SquareCheck size={14} /> {selectedRef.current.has(id) ? '取消选择' : '选择'}
+            <span className="kbd ml-auto">X</span>
+          </ContextItem>
+          <ContextSeparator />
+          {collection === 'problems' ? (
+            <ContextItem
+              onSelect={async () => {
+                const r = await exportProblems(target);
+                toast(r.message, r.tone);
+              }}
+            >
+              <Download size={14} /> {many ? `导出所选 ${target.length} 道题` : '导出为 Markdown'}
+            </ContextItem>
+          ) : null}
+          {collection === 'materials' && item?.status && !many ? (
+            <ContextItem
+              onSelect={() => {
+                const s = item.status === 'inbox' ? 'active' : 'inbox';
+                void run(target, { op: 'setStatus', status: s }, `已标为${MATERIAL_STATUS_LABELS[s]}：`);
+              }}
+            >
+              标为{MATERIAL_STATUS_LABELS[item.status === 'inbox' ? 'active' : 'inbox']}
+            </ContextItem>
+          ) : null}
+          <ContextItem
+            danger
+            onSelect={async () => {
+              const ok = await confirm({
+                title: '移到回收站',
+                message: many ? `把所选的 ${target.length} 项移到回收站？之后可以在回收站恢复。` : '把这一项移到回收站？之后可以在回收站恢复。',
+                confirmLabel: '移到回收站',
+                danger: true,
+              });
+              if (!ok) return;
+              const r = await run(target, { op: 'trash' }, '已移到回收站：');
+              if (r) selection.clear();
+            }}
+          >
+            <Trash2 size={14} /> {many ? `把所选 ${target.length} 项移到回收站` : '移到回收站'}
+          </ContextItem>
+        </>
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, collection, hrefOf],
+  );
+
+  const selectAllMatching = async () => {
+    try {
+      const r = await fetchAllIds(collection, filters);
+      selection.setAll(r.ids);
+      if (r.truncated) toast(`一次最多选择 ${r.ids.length} 项，已选中前 ${r.ids.length} 项`, 'warn');
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  const hasFilters = hasActiveFilters(filters);
+  const allLoadedSelected = ids.length > 0 && ids.every((id) => selection.has(id));
+  const sortField = filters.sort === 'updated' ? 'updatedAt' : 'createdAt';
+  // 按属性排序时不按时间分组
+  const groupByDate = filters.sort === 'created' || filters.sort === 'updated';
+  const quickIndex = quickId ? ids.indexOf(quickId) : -1;
 
   return (
     <div className="space-y-4">
@@ -199,139 +330,178 @@ export function EntityList({
             <span className="sr-only">搜索</span>
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
             <input
+              ref={searchRef}
               className="input pl-9"
               type="search"
               value={qInput}
               placeholder={collection === 'problems' ? '搜索标题、题干、笔记、答案、解析、标签…（空格分隔表示同时包含）' : '搜索资料标题、内容、图片说明、标签…'}
               onChange={(e) => setQInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
+                if (e.key === 'ArrowDown') {
+                  (e.target as HTMLInputElement).blur();
+                  if (ids[0]) setFocusedId(ids[0]);
+                }
+              }}
               data-testid="search-input"
             />
           </label>
           <div className="segmented" role="group" aria-label="排序">
-            <button type="button" aria-pressed={filters.sort === 'created'} onClick={() => setFilters({ ...filters, sort: 'created' })}>
+            <button type="button" aria-pressed={filters.sort === 'created'} onClick={() => setFilters({ ...urlFilters, sort: 'created' })}>
               最近添加
             </button>
-            <button type="button" aria-pressed={filters.sort === 'updated'} onClick={() => setFilters({ ...filters, sort: 'updated' })}>
+            <button type="button" aria-pressed={filters.sort === 'updated'} onClick={() => setFilters({ ...urlFilters, sort: 'updated' })}>
               最近修改
             </button>
+            {sortDefs.map((d) => (
+              <button key={d.id} type="button" aria-pressed={filters.sort === `prop:${d.id}`} onClick={() => setFilters({ ...urlFilters, sort: `prop:${d.id}` })}>
+                按{d.name}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <select className="select w-auto py-1" value={filters.subject} aria-label="学科" onChange={(e) => setFilters({ ...filters, subject: e.target.value })}>
-            <option value="">全部学科</option>
-            {catalog.subjects.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select className="select w-auto py-1" value={filters.stage} aria-label="学段" onChange={(e) => setFilters({ ...filters, stage: e.target.value })}>
-            <option value="">全部学段</option>
-            {catalog.stages.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          {tagOptions.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="标签筛选">
-              {tagOptions.map((t) => {
-                const on = filters.tags.includes(t.id);
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    aria-pressed={on}
-                    className={`chip border ${on ? 'border-sage-deep bg-sage text-white' : 'border-transparent'}`}
-                    onClick={() => setFilters({ ...filters, tags: on ? filters.tags.filter((x) => x !== t.id) : [...filters.tags, t.id] })}
-                  >
-                    {t.name}
+        {collection === 'problems' ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <DropdownMenu>
+              <DropdownTrigger asChild>
+                <button type="button" className={`btn btn-sm ${urlFilters.student ? 'btn-sage' : 'btn-ghost'}`}>
+                  <UserRound size={14} /> {student ? `按“${student.name}”的作答查看` : urlFilters.student ? '按学生查看（已归档）' : '按学生查看'}
+                  <ChevronDown size={13} />
+                </button>
+              </DropdownTrigger>
+              <DropdownContent>
+                {students.data?.map((s) => (
+                  <DropdownItem key={s.id} checked={s.id === urlFilters.student} onSelect={() => setFilters({ ...urlFilters, student: s.id })}>
+                    {s.name}
+                  </DropdownItem>
+                ))}
+                {students.data?.length ? null : <DropdownItem disabled onSelect={() => undefined}>还没有学生</DropdownItem>}
+                {urlFilters.student ? (
+                  <>
+                    <DropdownSeparator />
+                    <DropdownItem onSelect={() => setFilters({ ...urlFilters, student: '', attempt: '' })}>不按学生查看</DropdownItem>
+                  </>
+                ) : null}
+              </DropdownContent>
+            </DropdownMenu>
+            {urlFilters.student ? (
+              <div className="segmented" role="group" aria-label="作答状态">
+                <button type="button" aria-pressed={!urlFilters.attempt} onClick={() => setFilters({ ...urlFilters, attempt: '' })}>
+                  全部
+                </button>
+                {ATTEMPT_FILTERS.map((f) => (
+                  <button key={f} type="button" aria-pressed={urlFilters.attempt === f} onClick={() => setFilters({ ...urlFilters, attempt: f })}>
+                    {ATTEMPT_FILTER_LABELS[f]}
                   </button>
-                );
-              })}
-              {filters.tags.length > 1 ? <span className="text-xs text-ink-faint">包含全部所选标签</span> : null}
-            </div>
-          ) : null}
-          {hasFilters ? (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm ml-auto"
-              onClick={() => {
-                setQInput('');
-                setFilters({ q: '', subject: '', stage: '', tags: [], sort: filters.sort });
-              }}
-            >
-              <X size={14} /> 清除筛选
-            </button>
-          ) : null}
-        </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <FilterChips
+          filters={urlFilters}
+          setFilters={setFilters}
+          onClearAll={() => {
+            setQInput('');
+            setFilters({ ...urlFilters, q: '', subject: '', stage: '', tagPaths: [], tagIds: [], untagged: false, props: [], attempt: '' });
+          }}
+        />
       </div>
 
-      {selectionActions && selected.size > 0 ? (
-        <div className="card-flat flex flex-wrap items-center gap-3 bg-sage-soft px-4 py-2 text-sm">
-          <span>已选 {selected.size} 项</span>
-          {selectionActions([...selected], () => setSelected(new Set()))}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>
-            取消选择
-          </button>
-        </div>
+      {selection.selected.size > 0 ? (
+        <BatchBar
+          collection={collection}
+          ids={[...selection.selected]}
+          items={items}
+          total={total}
+          onSelectAllMatching={total > ids.length ? () => void selectAllMatching() : undefined}
+          onClear={selection.clear}
+        />
       ) : null}
 
-      {phase === 'loading' ? <Spinner /> : null}
-      {phase === 'error' ? <ErrorBox message={error} onRetry={() => setReloadKey((k) => k + 1)} /> : null}
-      {phase === 'ready' && items.length === 0 ? (
+      {query.isPending ? <Spinner /> : null}
+      {query.isError ? <ErrorBox message={errorMessage(query.error)} onRetry={() => void query.refetch()} /> : null}
+      {query.isSuccess && items.length === 0 ? (
         <EmptyState title={hasFilters ? '没有符合条件的内容' : emptyTitle}>{hasFilters ? '试试减少关键词或筛选条件。' : emptyHint}</EmptyState>
       ) : null}
-      {phase === 'ready' && items.length > 0 ? (
+      {items.length > 0 ? (
         <>
-          <p className="text-xs text-ink-faint" data-testid="result-count">
-            共 {total} 项{hasFilters ? '（已筛选）' : ''}
-          </p>
-          <ul className="space-y-3">
-            {items.map((it) => (
-              <Row
-                key={it.id}
-                item={it}
-                href={`/${collection}/${it.id}`}
-                placeholder={placeholder}
-                selectable={Boolean(selectionActions)}
-                checked={selected.has(it.id)}
-                onCheck={() =>
-                  setSelected((s) => {
-                    const n = new Set(s);
-                    if (n.has(it.id)) n.delete(it.id);
-                    else n.add(it.id);
-                    return n;
-                  })
-                }
+          <div className="flex flex-wrap items-center gap-3 text-xs text-ink-faint">
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-[var(--color-sage-deep)]"
+                checked={allLoadedSelected}
+                onChange={() => (allLoadedSelected ? selection.clear() : selection.setAll(ids))}
+                aria-label="全选已加载的项"
               />
-            ))}
+              全选
+            </label>
+            <span data-testid="result-count">
+              共 {total} 项{hasFilters ? '（已筛选）' : ''}
+            </span>
+            <span className="ml-auto hidden lg:inline">
+              <span className="kbd">J</span>/<span className="kbd">K</span> 移动 · <span className="kbd">X</span> 选择 · <span className="kbd">空格</span> 预览 ·{' '}
+              <span className="kbd">Enter</span> 打开 · <span className="kbd">{MOD_LABEL} K</span> 查找
+            </span>
+          </div>
+          <ul className="space-y-3">
+            {items.map((it, i) => {
+              const label = dateGroupLabel(it[sortField]);
+              const showHeader = groupByDate && (i === 0 || dateGroupLabel(items[i - 1]![sortField]) !== label);
+              return (
+                <GroupedRow key={it.id} header={showHeader ? label : null}>
+                  <ListRow
+                    item={it}
+                    href={hrefOf(it.id)}
+                    placeholder={placeholder}
+                    selected={selection.has(it.id)}
+                    focused={focusedId === it.id}
+                    dragIds={dragIdsFor(it.id)}
+                    onCheck={onCheck}
+                    onFocusRow={setFocusedId}
+                    onTagClick={onTagClick}
+                    defs={defsMap}
+                    studentName={student?.name}
+                    renderMenu={renderMenu}
+                  />
+                </GroupedRow>
+              );
+            })}
           </ul>
-          {items.length < total ? (
+          {query.hasNextPage ? (
             <div className="flex justify-center">
-              <button
-                type="button"
-                className="btn"
-                disabled={loadingMore}
-                onClick={async () => {
-                  setLoadingMore(true);
-                  try {
-                    const r = await query(items.length);
-                    setItems((xs) => [...xs, ...r.items.filter((x) => !xs.some((y) => y.id === x.id))]);
-                    setTotal(r.total);
-                  } catch (err) {
-                    setError(errorMessage(err));
-                  } finally {
-                    setLoadingMore(false);
-                  }
-                }}
-              >
-                {loadingMore ? '加载中…' : `加载更多（还有 ${total - items.length} 项）`}
+              <button type="button" className="btn" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
+                {query.isFetchingNextPage ? '加载中…' : `加载更多（还有 ${total - items.length} 项）`}
               </button>
             </div>
           ) : null}
         </>
       ) : null}
+
+      <QuickLook
+        collection={collection}
+        id={quickId}
+        onClose={() => setQuickId(null)}
+        onOpen={(id) => {
+          setQuickId(null);
+          navigate(hrefOf(id));
+        }}
+        onPrev={quickIndex > 0 ? () => setQuickId(ids[quickIndex - 1]!) : undefined}
+        onNext={quickIndex >= 0 && quickIndex < ids.length - 1 ? () => setQuickId(ids[quickIndex + 1]!) : undefined}
+      />
     </div>
+  );
+}
+
+function GroupedRow({ header, children }: { header: string | null; children: ReactNode }) {
+  if (!header) return <>{children}</>;
+  return (
+    <>
+      <li className="pt-1 text-xs font-bold tracking-wide text-ink-faint" aria-hidden="true">
+        {header}
+      </li>
+      {children}
+    </>
   );
 }

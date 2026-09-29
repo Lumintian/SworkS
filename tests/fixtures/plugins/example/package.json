@@ -1,0 +1,14 @@
+{
+  "name": "sworks-plugin-example-ocr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sworks": {
+    "apiVersion": 1,
+    "id": "example-ocr",
+    "name": "题图文字识别（示例）",
+    "version": "0.1.0",
+    "entry": "index.ts",
+    "description": "把题图交给模型识别成文字，写成题目的一条笔记；每天做一次完整备份。"
+  }
+}

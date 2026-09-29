@@ -37,6 +37,8 @@ export interface TestApp {
   request: (method: string, url: string, body?: unknown, headers?: Record<string, string>) => Promise<Response>;
   json: <T = any>(method: string, url: string, body?: unknown) => Promise<{ status: number; body: T }>;
   upload: (url: string, data: Uint8Array, filename: string, fields?: Record<string, string>) => Promise<Response>;
+  /** 只带 Host 与给定的头（不带 Origin、CSRF），模拟命令行客户端 */
+  raw: (method: string, url: string, body?: unknown, headers?: Record<string, string>) => Promise<Response>;
   close: () => void;
 }
 
@@ -81,6 +83,14 @@ export async function makeTestApp(
       for (const [k, v] of Object.entries(fields)) form.append(k, v);
       return Promise.resolve(app.request(url, { method: 'POST', headers: baseHeaders(), body: form }));
     },
+    raw: (method, url, body, headers = {}) =>
+      Promise.resolve(
+        app.request(url, {
+          method,
+          headers: { host: HOST, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        }),
+      ),
     close: () => {
       ctx.archiver.stop();
       lib.close();

@@ -1,13 +1,16 @@
 /** 与本机服务通信。只有服务端确认落盘（2xx）才算成功。 */
-import type { ApiErrorBody, SessionDTO } from '@shared/api';
+import type { ApiErrorBody, ErrorCode, SessionDTO } from '@shared/api';
 import { CLIENT_HEADER, CSRF_HEADER } from '@shared/constants';
 import { TAB_ID } from './broadcast';
 
+/** 服务端错误码，加上只在前端出现的：连不上服务、取不到会话、响应不是约定的错误格式、页面自身的异常。 */
+export type ApiErrorCode = ErrorCode | 'NETWORK' | 'SESSION' | 'UNKNOWN' | `HTTP_${number}`;
+
 export class ApiError extends Error {
-  readonly code: string;
+  readonly code: ApiErrorCode;
   readonly status: number;
   readonly details: unknown;
-  constructor(code: string, message: string, status: number, details?: unknown) {
+  constructor(code: ApiErrorCode, message: string, status: number, details?: unknown) {
     super(message);
     this.code = code;
     this.status = status;
@@ -41,7 +44,7 @@ async function toError(res: Response): Promise<ApiError> {
     const body = (await res.json()) as ApiErrorBody;
     return new ApiError(body.error.code, body.error.message, res.status, body.error.details);
   } catch {
-    return new ApiError('HTTP_' + res.status, `请求失败（HTTP ${res.status}）`, res.status);
+    return new ApiError(`HTTP_${res.status}`, `请求失败（HTTP ${res.status}）`, res.status);
   }
 }
 

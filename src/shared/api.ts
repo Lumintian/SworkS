@@ -327,9 +327,7 @@ export const dictMergeSchema = z.object({ values: z.array(z.string().min(1).max(
 
 // ---------- 响应类型 ----------
 
-export interface ApiErrorBody {
-  error: { code: string; message: string; details?: unknown };
-}
+export type { ErrorBody as ApiErrorBody, ErrorCode } from './errors.js';
 
 /** 图片存储策略（只影响新收录的图片；已有附件不动）。 */
 export const imagePolicySchema = z.object({

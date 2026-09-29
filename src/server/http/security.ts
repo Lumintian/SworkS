@@ -8,6 +8,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import { CSRF_HEADER } from '../../shared/constants.js';
 import type { AppContext } from '../context.js';
+import { errorResponse } from '../errors.js';
 
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -15,32 +16,26 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-function deny(code: string, message: string): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), {
-    status: 403,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-  });
-}
 
 export function securityMiddleware(ctx: AppContext): MiddlewareHandler {
   return async (c, next) => {
     const host = (c.req.header('host') ?? '').toLowerCase();
     if (!ctx.security.allowedHosts.has(host)) {
-      return deny('FORBIDDEN_HOST', '拒绝访问：请求的 Host 不是本机地址');
+      return errorResponse('FORBIDDEN_HOST', '拒绝访问：请求的 Host 不是本机地址');
     }
     const method = c.req.method.toUpperCase();
-    if (method === 'OPTIONS') return deny('FORBIDDEN_ORIGIN', '不支持跨源访问');
+    if (method === 'OPTIONS') return errorResponse('FORBIDDEN_ORIGIN', '不支持跨源访问');
     if (method !== 'GET' && method !== 'HEAD') {
       const origin = c.req.header('origin');
       if (origin !== undefined && !ctx.security.allowedOrigins.has(origin.toLowerCase())) {
-        return deny('FORBIDDEN_ORIGIN', '拒绝跨源修改请求');
+        return errorResponse('FORBIDDEN_ORIGIN', '拒绝跨源修改请求');
       }
       const site = c.req.header('sec-fetch-site');
       if (site !== undefined && site !== 'same-origin' && site !== 'none') {
-        return deny('FORBIDDEN_ORIGIN', '拒绝跨站修改请求');
+        return errorResponse('FORBIDDEN_ORIGIN', '拒绝跨站修改请求');
       }
       const token = c.req.header(CSRF_HEADER) ?? '';
-      if (!safeEqual(token, ctx.csrfToken)) return deny('CSRF', '缺少或无效的 CSRF 令牌，请刷新页面');
+      if (!safeEqual(token, ctx.csrfToken)) return errorResponse('CSRF', '缺少或无效的 CSRF 令牌，请刷新页面');
     }
     await next();
     c.header('X-Content-Type-Options', 'nosniff');

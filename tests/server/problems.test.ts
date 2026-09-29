@@ -102,6 +102,60 @@ describe('收集与编辑', () => {
     expect(got.body.notes[0].title).toBe('我的解法');
   });
 
+  it('笔记序号：保存与读取；省略保留原值、null 清除；只改序号也递增版本；相同保存不递增；越界拒绝', async () => {
+    t = await makeTestApp();
+    const id = newId();
+    const a1 = newId();
+    const a2 = newId();
+    const created = await t.json('POST', '/api/problems', {
+      id,
+      notes: [
+        { id: a1, type: 'answer', bodyMd: 'x=2', seq: 1 },
+        { id: a2, type: 'answer', bodyMd: 'y=-1' },
+      ],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.entity.notes.map((n: any) => n.seq)).toEqual([1, null]);
+    const put = (version: number, notes: unknown[]) => t!.json('PUT', `/api/problems/${id}`, { expectedVersion: version, notes });
+    // 省略 seq：保留原值（升级前的旧页面保存）
+    let r = await put(1, [
+      { id: a1, type: 'answer', bodyMd: 'x=2' },
+      { id: a2, type: 'answer', bodyMd: 'y=-1' },
+    ]);
+    expect(r.body.entity.version).toBe(1);
+    expect(r.body.entity.notes.map((n: any) => n.seq)).toEqual([1, null]);
+    // 只改序号：算实际修改
+    r = await put(1, [
+      { id: a1, type: 'answer', bodyMd: 'x=2', seq: 1 },
+      { id: a2, type: 'answer', bodyMd: 'y=-1', seq: 2 },
+    ]);
+    expect(r.body.entity.version).toBe(2);
+    expect(r.body.entity.notes.map((n: any) => n.seq)).toEqual([1, 2]);
+    // 相同内容再次保存：不递增
+    r = await put(2, [
+      { id: a1, type: 'answer', bodyMd: 'x=2', seq: 1 },
+      { id: a2, type: 'answer', bodyMd: 'y=-1', seq: 2 },
+    ]);
+    expect(r.body.entity.version).toBe(2);
+    // null 清除
+    r = await put(2, [
+      { id: a1, type: 'answer', bodyMd: 'x=2', seq: null },
+      { id: a2, type: 'answer', bodyMd: 'y=-1', seq: 2 },
+    ]);
+    expect(r.body.entity.version).toBe(3);
+    expect(r.body.entity.notes.map((n: any) => n.seq)).toEqual([null, 2]);
+    // 只调整顺序也是修改
+    r = await put(3, [
+      { id: a2, type: 'answer', bodyMd: 'y=-1', seq: 2 },
+      { id: a1, type: 'answer', bodyMd: 'x=2', seq: null },
+    ]);
+    expect(r.body.entity.version).toBe(4);
+    expect(r.body.entity.notes.map((n: any) => n.id)).toEqual([a2, a1]);
+    // 越界
+    expect((await put(4, [{ id: a1, type: 'answer', bodyMd: 'x=2', seq: 1000 }])).status).toBe(400);
+    expect((await put(4, [{ id: a1, type: 'answer', bodyMd: 'x=2', seq: 1.5 }])).status).toBe(400);
+  });
+
   it('资料可以独立保存；从资料建题后资料仍存在，双方编辑不互相覆盖', async () => {
     t = await makeTestApp();
     const img = await uploadImage(t);

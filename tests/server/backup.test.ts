@@ -118,6 +118,19 @@ async function seed(t: TestApp) {
   const old = newId();
   await t.json('POST', '/api/students', { id: old, name: '已结课的学生' });
   await t.json('POST', `/api/students/${old}/archive`);
+  // v4 新增的数据（接口在后续阶段提供，这里直接写库）：笔记序号、原文件摘要、常用检索
+  const db = t.lib.db;
+  db.prepare("UPDATE notes SET seq = 2 WHERE problem_id = ? AND type = 'answer'").run(pid);
+  db.prepare('UPDATE raw_inputs SET original_mime = ?, original_size = ?, original_sha256 = ? WHERE id = ?').run(
+    'image/heic',
+    123456,
+    'f'.repeat(64),
+    img1.rawInputId,
+  );
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO saved_searches (id, scope, name, query_json, sort, position, show_in_nav, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)',
+  ).run(newId(), 'problem', '函数错题', JSON.stringify({ v: 1, text: 'tag:函数', ast: null }), null, now, now);
   return { pid, mid, trashed, deletedNote };
 }
 
@@ -176,6 +189,9 @@ describe('全库备份与恢复往返', () => {
     expect(after.notes.find((n) => n.id === seeded.deletedNote)!.deleted_at).not.toBeNull();
     expect(after.notes.find((n) => n.body_md === NOTE_MD)).toBeTruthy();
     expect(after.materials[0]!.status).toBe('inbox');
+    expect(after.notes.find((n) => n.type === 'answer')!.seq).toBe(2);
+    expect(after.raw_inputs.filter((r) => r.original_mime === 'image/heic')).toHaveLength(1);
+    expect(after.saved_searches.map((x) => x.name)).toEqual(['函数错题']);
     // 附件字节一致
     for (const a of after.assets) {
       const src = path.join(t.lib.paths.assets, a.rel_path);
@@ -365,6 +381,29 @@ describe('旧版本备份', () => {
     // 恢复后的库可以正常备份（当前格式）
     const again = await t.json('POST', '/api/backups');
     expect(again.status).toBe(201);
+  });
+
+  it('v3 备份（学生与作答版本生成）可以恢复：笔记序号为空，题型经迁移变为分层，数据完整', async () => {
+    const fixture = path.resolve(import.meta.dirname, '../fixtures/backup-v3.sworks.zip');
+    const target = path.join(work, 'restored-v3');
+    const result = await restoreBackup(fixture, target);
+    expect(result.manifest.backupSchemaVersion).toBe(3);
+    expect(result.counts.student_attempts).toBe(1);
+    t = await makeTestApp({ dataDir: target });
+    const p = (await t.json('GET', '/api/problems/44444444-4444-4444-8444-444444444444')).body;
+    expect(p.title).toBe('判断函数单调性');
+    expect(p.notes.map((n: any) => [n.type, n.seq])).toEqual([
+      ['answer', null],
+      ['solution', null],
+    ]);
+    expect(p.rawInputs[0].original).toBeNull();
+    expect(p.properties).toHaveLength(3);
+    const defs = (await t.json('GET', '/api/properties')).body as { preset: string; nested: boolean }[];
+    expect(defs.find((d) => d.preset === 'qtype')!.nested).toBe(true);
+    const st = (await t.json('GET', '/api/students/66666666-6666-4666-8666-666666666666')).body;
+    expect(st.stats).toMatchObject({ attempts: 1, wrong: 1 });
+    expect((await t.json('GET', `/api/problems?q=${encodeURIComponent('单调性')}`)).body.total).toBe(1);
+    expect(t.lib.db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
   });
 
   it('不认识的备份版本组合被拒绝', async () => {

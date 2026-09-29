@@ -56,3 +56,45 @@ describe('从 v1 升级到最新版本', () => {
     expect(p.properties).toEqual([]);
   });
 });
+
+describe('从 v3 升级到 v4', () => {
+  it('有数据的 v3 库：写安全备份；笔记序号、原文件摘要为空；题型改为分层；新增常用检索表', async () => {
+    const dir = path.join(await makeTempDir(), 'data');
+    const v3 = await openLibrary(dir, { migrations: MIGRATIONS.slice(0, 3) });
+    const now = new Date().toISOString();
+    const pid = '44444444-4444-4444-8444-444444444444';
+    const nid = '66666666-6666-4666-8666-666666666666';
+    const rid = '77777777-7777-4777-8777-777777777777';
+    v3.db.prepare('INSERT INTO problems (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(pid, 'v3 的题', now, now);
+    v3.db
+      .prepare("INSERT INTO notes (id, problem_id, type, body_md, position, created_at, updated_at) VALUES (?, ?, 'answer', '答案', 0, ?, ?)")
+      .run(nid, pid, now, now);
+    v3.db.prepare("INSERT INTO raw_inputs (id, kind, text, problem_id, captured_at) VALUES (?, 'text', '原文', ?, ?)").run(rid, pid, now);
+    expect(v3.db.pragma('user_version', { simple: true })).toBe(3);
+    v3.close();
+
+    const v4 = await openLibrary(dir);
+    opened.push(v4);
+    expect(v4.migration).toMatchObject({ from: 3, to: LATEST_SCHEMA_VERSION });
+    expect(v4.migration.safetyBackup).toMatch(new RegExp(`pre-migration-v3-to-v${LATEST_SCHEMA_VERSION}-.*\\.sqlite3$`));
+    expect(v4.db.prepare('SELECT seq FROM notes WHERE id = ?').get(nid)).toEqual({ seq: null });
+    expect(v4.db.prepare('SELECT original_mime, original_size, original_sha256 FROM raw_inputs WHERE id = ?').get(rid)).toEqual({
+      original_mime: null,
+      original_size: null,
+      original_sha256: null,
+    });
+    expect(v4.db.prepare("SELECT nested FROM property_defs WHERE preset = 'qtype'").get()).toEqual({ nested: 1 });
+    expect(v4.db.prepare('SELECT COUNT(*) AS n FROM saved_searches').get()).toEqual({ n: 0 });
+    expect(v4.db.pragma('foreign_key_check')).toEqual([]);
+    // 原文件摘要三列必须同空同非空
+    expect(() => v4.db.prepare("UPDATE raw_inputs SET original_mime = 'image/heic' WHERE id = ?").run(rid)).toThrow(/CHECK/);
+    expect(() => v4.db.prepare('UPDATE notes SET seq = 1000 WHERE id = ?').run(nid)).toThrow(/CHECK/);
+    v4.close();
+    opened.pop();
+
+    t = await makeTestApp({ dataDir: dir });
+    const p = (await t.json('GET', `/api/problems/${pid}`)).body;
+    expect(p.notes[0]).toMatchObject({ id: nid, seq: null });
+    expect(p.rawInputs[0]).toMatchObject({ id: rid, original: null });
+  });
+});

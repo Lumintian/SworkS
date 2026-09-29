@@ -40,6 +40,7 @@ describe('开放 Markdown 导出', () => {
       notes: [
         { id: newId(), type: 'answer', bodyMd: callout },
         { id: newId(), type: 'solution', title: '我的解法', bodyMd: '错位相减' },
+        { id: newId(), type: 'answer', bodyMd: '第二问', seq: 2 },
       ],
     });
     // 另一道题的私人笔记与图片不应被导出
@@ -63,6 +64,11 @@ describe('开放 Markdown 导出', () => {
     expect(md).toContain(callout);
     expect(md).toContain('### 答案');
     expect(md).toContain('### 解析：我的解法');
+    // 笔记按类型分节：解析在答案之前；带序号的写进标题与注释
+    expect(md.indexOf('## 解析')).toBeGreaterThan(-1);
+    expect(md.indexOf('## 解析')).toBeLessThan(md.indexOf('## 答案'));
+    expect(md).toContain('### 答案 (2)');
+    expect(md).toMatch(/<!-- sworks-note id=[0-9a-f-]+ type=answer seq=2 -->/);
     expect(md).not.toContain('其他题的私人笔记');
     // 图片字节与原件一致
     const original = fs.readFileSync(path.join(t.lib.paths.assets, `${img.asset.sha256.slice(0, 2)}/${img.asset.sha256}.png`));

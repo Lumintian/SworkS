@@ -9,6 +9,7 @@ import type { AssetDTO, RemoteImageCreateDTO, RemoteImageDTO, TextFileImportDTO,
 import type { AppContext } from '../context.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError, toAppError } from '../errors.js';
+import { originStore, recordRawInput, recordRemoteImage } from '../events/changes.js';
 import { toAssetDTO, type AssetRow } from './assetStore.js';
 import { ensureRemoteImages } from './entities.js';
 import { INPUT_ONLY_IMAGE_MIMES, IMAGE_FORMAT_LABELS, type ImageMime } from '../../shared/constants.js';
@@ -38,6 +39,7 @@ function insertRawInput(
     `INSERT INTO raw_inputs (id, kind, text, asset_id, url, original_filename, problem_id, material_id, block_id, captured_at, original_mime, original_size, original_sha256)
      VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)`,
   ).run(id, r.kind, r.text ?? null, r.assetId ?? null, r.url ?? null, r.originalFilename ?? null, r.blockId ?? null, nowIso(), o?.mime ?? null, o?.size ?? null, o?.sha256 ?? null);
+  recordRawInput(db, id, r.assetId ?? null);
   return id;
 }
 
@@ -179,7 +181,7 @@ export class RemoteArchiver {
   archive(id: string): Promise<RemoteImageDTO> {
     const running = this.inflight.get(id);
     if (running) return running;
-    const p = this.doArchive(id).finally(() => this.inflight.delete(id));
+    const p = originStore.run({ kind: 'system', source: 'archiver' }, () => this.doArchive(id)).finally(() => this.inflight.delete(id));
     this.inflight.set(id, p);
     return p;
   }
@@ -211,6 +213,7 @@ export class RemoteArchiver {
           `UPDATE remote_images SET status = 'archived', asset_id = ?, archived_via = 'download',
              error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ?`,
         ).run(asset.id, nowIso(), id);
+        recordRemoteImage(db, id);
       })();
     } catch (err) {
       const e = toAppError(err);
@@ -218,6 +221,7 @@ export class RemoteArchiver {
         db.prepare(
           "UPDATE remote_images SET status = 'failed', error_code = ?, error_message = ?, updated_at = ? WHERE id = ? AND status <> 'archived'",
         ).run(e.code, e.message, nowIso(), id);
+        recordRemoteImage(db, id);
       } catch {
         // 数据库不可写时保持 pending，下次启动继续
       }
@@ -239,6 +243,7 @@ export class RemoteArchiver {
            error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ?`,
       ).run(uploaded.asset.id, nowIso(), id);
       db.prepare('UPDATE raw_inputs SET url = ? WHERE id = ?').run(row.url, uploaded.rawInputId);
+      recordRemoteImage(db, id);
     })();
     return toRemoteImageDTO(getRemoteRow(db, id)!);
   }

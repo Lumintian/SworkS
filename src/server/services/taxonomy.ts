@@ -7,7 +7,7 @@ import type { DictEntryDTO, DictKind, DictManageDTO, TagRenameResultDTO } from '
 import { inSubtree, normalizeTagInput, splitTagPath, tagKey, TAG_SEP } from '../../shared/tagPath.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
-import { bumpVersion } from './entities.js';
+import { bumpVersion } from './versioning.js';
 import { normalizeShortText, placeholders, type OwnerKind } from './rows.js';
 import { reindex } from './search.js';
 

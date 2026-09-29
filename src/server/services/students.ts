@@ -4,6 +4,7 @@
  * - 作答记录与题目内容相互独立：写入作答不改变题目的 write_version / updated_at。
  * - 删除作答为软删除，可恢复；学生只归档不删除。
  */
+import { recordAttempt, recordCatalog } from '../events/changes.js';
 import type { AttemptDTO, AttemptSummaryDTO, StudentDetailDTO, StudentDTO, StudentStatsDTO, WeakPointDTO } from '../../shared/api.js';
 import type { AttemptResult } from '../../shared/constants.js';
 import { nowIso, type DB } from '../db/connection.js';
@@ -96,6 +97,7 @@ function requireName(name: string): string {
 export function createStudent(db: DB, input: { id: string; name: string; stage?: string | null | undefined; note?: string | null | undefined }): { student: StudentDTO; created: boolean } {
   const id = input.id.toLowerCase();
   return db.transaction(() => {
+    recordCatalog(db, 'students');
     const existing = db.prepare('SELECT * FROM students WHERE id = ?').get(id) as StudentRow | undefined;
     if (existing) return { student: toStudentDTO(db, existing), created: false };
     const now = nowIso();
@@ -117,6 +119,7 @@ export function updateStudent(
   input: { name?: string | undefined; stage?: string | null | undefined; note?: string | null | undefined; expectedVersion?: number | undefined },
 ): StudentDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'students');
     const s = getStudentRow(db, id);
     if (input.expectedVersion !== undefined && input.expectedVersion !== s.write_version) {
       throw new AppError('CONFLICT', '学生信息已在其他页面被修改', { details: { currentVersion: s.write_version } });
@@ -141,6 +144,7 @@ export function updateStudent(
 
 export function setStudentArchived(db: DB, id: string, archived: boolean): StudentDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'students');
     const s = getStudentRow(db, id);
     if ((s.archived_at !== null) !== archived) {
       db.prepare('UPDATE students SET archived_at = ?, updated_at = ?, write_version = write_version + 1 WHERE id = ?').run(
@@ -241,6 +245,7 @@ function insertAttempt(db: DB, id: string, studentId: string, problemId: string,
     `INSERT INTO student_attempts (id, student_id, problem_id, attempted_at, result, felt_difficulty, duration_sec, note, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, studentId, problemId, at, f.result, f.feltDifficulty ?? null, f.durationSec ?? null, normalizeShortText(f.note), now, now);
+  recordAttempt(db, studentId, problemId);
   return true;
 }
 
@@ -298,6 +303,7 @@ export function updateAttempt(
     db.prepare(
       'UPDATE student_attempts SET result = ?, felt_difficulty = ?, duration_sec = ?, note = ?, attempted_at = ?, updated_at = ? WHERE id = ?',
     ).run(next.result, next.felt, next.duration, next.note, next.at, nowIso(), r.id);
+    recordAttempt(db, r.student_id, r.problem_id);
     return attemptDTOs(db, [db.prepare('SELECT * FROM student_attempts WHERE id = ?').get(r.id) as AttemptRow])[0]!;
   })();
 }
@@ -308,6 +314,7 @@ export function setAttemptDeleted(db: DB, id: string, deleted: boolean): void {
     if (!r) throw new AppError('NOT_FOUND', '作答记录不存在');
     if ((r.deleted_at !== null) === deleted) return;
     db.prepare('UPDATE student_attempts SET deleted_at = ?, updated_at = ? WHERE id = ?').run(deleted ? nowIso() : null, nowIso(), r.id);
+    recordAttempt(db, r.student_id, r.problem_id);
   })();
 }
 

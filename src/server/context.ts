@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import type { Limits } from './config.js';
+import { EventBus } from './events/bus.js';
+import { installChangeLog } from './events/changes.js';
+import { SseHub } from './events/sse.js';
 import { DEFAULT_LIMITS } from './config.js';
 import type { DB } from './db/connection.js';
 import { getMeta } from './db/migrations.js';
@@ -37,6 +40,10 @@ export interface AppContext {
   /** 构建后的前端目录；为 null 时不提供页面（开发模式由 Vite 提供） */
   webDir: string | null;
   log: Logger;
+  /** 进程内事件总线：服务层的变更提交后在这里发出 */
+  events: EventBus;
+  /** 把变更事件推送给页面 */
+  sse: SseHub;
 }
 
 export interface ContextOptions {
@@ -67,7 +74,10 @@ export function createContext(opts: ContextOptions): AppContext {
     backupState: { running: false },
     webDir: opts.webDir ?? null,
     log: opts.log ?? consoleLogger,
-  } as Omit<AppContext, 'archiver'> as AppContext;
+  } as Omit<AppContext, 'archiver' | 'events' | 'sse'> as AppContext;
+  ctx.events = new EventBus(ctx.log);
+  ctx.sse = new SseHub(ctx.events);
+  installChangeLog(opts.db, ctx.events);
   ctx.archiver = new RemoteArchiver(ctx);
   return ctx;
 }

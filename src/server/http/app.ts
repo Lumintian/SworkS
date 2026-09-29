@@ -38,10 +38,11 @@ import {
   type SessionDTO,
 } from '../../shared/api.js';
 import { isUuid } from '../../shared/assetRef.js';
-import { APP_VERSION } from '../../shared/constants.js';
+import { APP_VERSION, CLIENT_HEADER } from '../../shared/constants.js';
 import { parseListFilters } from '../../shared/listFilters.js';
 import type { AppContext } from '../context.js';
 import { schemaVersion } from '../db/migrations.js';
+import { originStore } from '../events/changes.js';
 import { AppError, toAppError } from '../errors.js';
 import { backupFilePath, createBackup, lastBackupAt, listBackups } from '../services/backup.js';
 import { runBatch } from '../services/batch.js';
@@ -175,6 +176,14 @@ export function createApp(ctx: AppContext): Hono {
       onError: (c) => c.json({ error: { code: 'TOO_LARGE', message: '请求体过大' } }, 413),
     }),
   );
+
+  // 写请求在“页面”来源下运行，变更事件据此带上发起的标签页 ID
+  app.use('/api/*', (c, next) => {
+    const m = c.req.method;
+    if (m === 'GET' || m === 'HEAD') return next();
+    const id = c.req.header(CLIENT_HEADER);
+    return originStore.run({ kind: 'web', ...(id && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? { clientId: id } : {}) }, next);
+  });
 
   // ------------------------------------------------------------ 会话与元信息
   app.get('/api/session', (c) => {

@@ -7,6 +7,7 @@
  * - 已归档的属性取值冻结保留，但不出现在返回数据、保存比较、导航与检索中。
  * - 属性不再适用于某类对象时，该类对象上的取值同样冻结。
  */
+import { recordCatalog } from '../events/changes.js';
 import { randomUUID } from 'node:crypto';
 import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, PropertyValueDTO, PropertyValueInput } from '../../shared/api.js';
 import { PROPERTY_PRESETS, RESERVED_PROPERTY_NAMES, type PropertyPreset, type PropertyType } from '../../shared/constants.js';
@@ -418,6 +419,7 @@ export function createPropertyDef(
 ): PropertyDefDTO {
   const id = input.id.toLowerCase();
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     if (db.prepare('SELECT 1 FROM property_defs WHERE id = ?').get(id)) return getPropertyDef(db, id);
     const name = validateName(db, input.name);
     if (input.nested && !OPTION_TYPES.includes(input.type)) throw new AppError('VALIDATION', '只有单选、多选属性的选项可以分层');
@@ -445,6 +447,7 @@ export function updatePropertyDef(
   touch: TouchOwner,
 ): PropertyDefDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const d = getDef(db, id);
     const name = input.name !== undefined ? validateName(db, input.name, d.id) : d.name;
     const ap = input.appliesProblem ?? d.applies_problem === 1;
@@ -477,6 +480,7 @@ export function updatePropertyDef(
 /** 归档（或取消归档）属性：取值冻结保留，不出现在编辑页、导航与检索中。预置属性不能归档，只能隐藏。 */
 export function setPropertyArchived(db: DB, id: string, archived: boolean, touch: TouchOwner): PropertyDefDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const d = getDef(db, id);
     if (archived && d.preset) throw new AppError('VALIDATION', '预置属性不能归档，可以在导航中隐藏');
     if ((d.archived_at !== null) === archived) return getPropertyDef(db, d.id);
@@ -489,6 +493,7 @@ export function setPropertyArchived(db: DB, id: string, archived: boolean, touch
 
 export function reorderPropertyDefs(db: DB, ids: readonly string[]): void {
   db.transaction(() => {
+    recordCatalog(db, 'properties');
     const all = (db.prepare('SELECT id FROM property_defs ORDER BY position, created_at, id').all() as { id: string }[]).map((r) => r.id);
     const wanted = ids.map((i) => i.toLowerCase()).filter((i) => all.includes(i));
     const order = [...new Set(wanted), ...all.filter((i) => !wanted.includes(i))];
@@ -542,6 +547,7 @@ function insertOption(db: DB, id: string, propertyId: string, parentId: string |
 
 export function createOption(db: DB, propertyId: string, input: { id: string; label: string; parentId: string | null }): PropertyDefDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const d = requireOptionDef(db, propertyId);
     const id = input.id.toLowerCase();
     if (db.prepare('SELECT 1 FROM property_options WHERE id = ?').get(id)) return getPropertyDef(db, d.id);
@@ -560,6 +566,7 @@ export function createOption(db: DB, propertyId: string, input: { id: string; la
 /** 按路径（用 / 分隔）找到选项，不存在的层级自动创建；返回最后一级的 ID。 */
 export function ensureOptionPath(db: DB, propertyId: string, path: string): string {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const d = requireOptionDef(db, propertyId);
     const segs = path
       .split('/')
@@ -579,6 +586,7 @@ export function ensureOptionPath(db: DB, propertyId: string, path: string): stri
 
 export function renameOption(db: DB, optionId: string, rawLabel: string, touch: TouchOwner): PropertyDefDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const o = getOption(db, optionId);
     const label = normalizeLabel(rawLabel);
     if (label === o.label) return getPropertyDef(db, o.property_id);
@@ -601,6 +609,7 @@ export function moveOption(db: DB, optionId: string, parentIdRaw: string | null,
  */
 export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: string | null, index: number | undefined, touch: TouchOwner): PropertyDefDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const opts = [...new Set(optionIds.map((x) => x.toLowerCase()))].map((id) => getOption(db, id));
     if (opts.length === 0) throw new AppError('VALIDATION', '没有要移动的选项');
     const d = getDef(db, opts[0]!.property_id);
@@ -651,6 +660,7 @@ export function deleteOption(db: DB, optionId: string, touch: TouchOwner): { del
 /** 一次删除多个选项（各含子树，可跨属性）：子树取并集，一个事务，每个对象只递增一次版本。 */
 export function deleteOptions(db: DB, optionIds: readonly string[], touch: TouchOwner): { deleted: number; affectedItems: number } {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const ids = new Set<string>();
     const trees = new Map<string, OptionTree>();
     for (const raw of new Set(optionIds.map((x) => x.toLowerCase()))) {
@@ -680,6 +690,7 @@ export function deleteOptions(db: DB, optionIds: readonly string[], touch: Touch
  */
 export function mergeOption(db: DB, sourceId: string, targetId: string, touch: TouchOwner): { affectedItems: number } {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const src = getOption(db, sourceId);
     const dst = getOption(db, targetId);
     if (src.id === dst.id) return { affectedItems: 0 };
@@ -727,6 +738,7 @@ export function mergeOption(db: DB, sourceId: string, targetId: string, touch: T
  */
 export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: string, touch: TouchOwner): { merged: number; affectedItems: number } {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const dst = getOption(db, targetId);
     const tree = optionTreeOf(db, dst.property_id);
     const srcs = [...new Set(sourceIds.map((x) => x.toLowerCase()))].filter((id) => id !== dst.id).map((id) => getOption(db, id));
@@ -755,6 +767,7 @@ export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: str
  */
 export function importOutline(db: DB, propertyId: string, outline: string): OutlineImportResultDTO {
   return db.transaction(() => {
+    recordCatalog(db, 'properties');
     const d = requireOptionDef(db, propertyId);
     let created = 0;
     let existing = 0;

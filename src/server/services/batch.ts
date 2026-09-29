@@ -8,7 +8,8 @@
 import type { BatchAction, BatchResultDTO } from '../../shared/api.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
-import { bumpVersion, getEntityRow, resolveTagIds, setDeletedTx } from './entities.js';
+import { getEntityRow, resolveTagIds, setDeletedTx } from './entities.js';
+import { bumpVersion } from './versioning.js';
 import { applyPropertyOp } from './properties.js';
 import { normalizeShortText, ownerColumn, ownerTable, placeholders, tagTable, type EntityRow, type OwnerKind } from './rows.js';
 import { reindex } from './search.js';

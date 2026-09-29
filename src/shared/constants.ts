@@ -167,3 +167,5 @@ export const PAGE_SIZE = 20;
 
 /** 修改类请求必须携带的 CSRF 头。 */
 export const CSRF_HEADER = 'x-sworks-csrf';
+/** 页面标签页的 ID：写请求带上它，事件里据此认出“自己发出的修改”。 */
+export const CLIENT_HEADER = 'x-sworks-client';

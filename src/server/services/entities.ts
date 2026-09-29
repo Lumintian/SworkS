@@ -25,6 +25,8 @@ import { toAssetDTO, type AssetRow } from './assetStore.js';
 import { extractImageRefs, remoteImageUrls } from './markdown.js';
 import { copyProperties, loadPropertyValues, writeProperties } from './properties.js';
 import { reindex } from './search.js';
+import { bumpVersion, recordCreated } from './versioning.js';
+import { recordCatalog, recordRemoteImage } from '../events/changes.js';
 import {
   normalizeShortText,
   normalizeTagNames,
@@ -351,6 +353,7 @@ export function resolveTagIds(db: DB, names: readonly string[]): string[] {
     else {
       const id = randomUUID();
       createTag.run(id, name, nowIso());
+      recordCatalog(db, 'tags');
       ids.push(id);
     }
   }
@@ -381,15 +384,6 @@ function writeTags(db: DB, owner: Owner, names: string[]): boolean {
   return changed;
 }
 
-/**
- * 对象内容发生了实际变化：递增 write_version 并刷新 updated_at。
- * 批量操作与管理操作也必须调用，这样仍打开着的旧编辑页保存时会得到 409，不会把旧值写回。
- * 调用方负责在同一事务内 reindex。
- */
-export function bumpVersion(db: DB, kind: OwnerKind, id: string, now: string): void {
-  db.prepare(`UPDATE ${ownerTable(kind)} SET updated_at = ?, write_version = write_version + 1 WHERE id = ?`).run(now, id);
-}
-
 function writeNotes(db: DB, problemId: string, input: NoteInput[], now: string): boolean {
   assertUniqueIds(input.map((n) => n.id), '笔记');
   const all = new Map(
@@ -410,24 +404,26 @@ function writeNotes(db: DB, problemId: string, input: NoteInput[], now: string):
     }
   }
   const update = db.prepare(
-    `UPDATE notes SET type = @type, title = @title, body_md = @body_md, position = @position,
+    `UPDATE notes SET type = @type, title = @title, body_md = @body_md, position = @position, seq = @seq,
        deleted_at = NULL, updated_at = @updated_at WHERE id = @id`,
   );
   const insert = db.prepare(
-    `INSERT INTO notes (id, problem_id, type, title, body_md, position, created_at, updated_at, deleted_at)
-     VALUES (@id, @problem_id, @type, @title, @body_md, @position, @now, @now, NULL)`,
+    `INSERT INTO notes (id, problem_id, type, title, body_md, position, seq, created_at, updated_at, deleted_at)
+     VALUES (@id, @problem_id, @type, @title, @body_md, @position, @seq, @now, @now, NULL)`,
   );
   input.forEach((n, position) => {
     const title = normalizeShortText(n.title);
     const prev = all.get(n.id);
     if (prev) {
+      // 省略 seq 表示保留原值（升级前仍开着的旧页面保存时不会抹掉序号）
+      const seq = n.seq === undefined ? prev.seq : n.seq;
       const same =
-        prev.deleted_at === null && prev.type === n.type && prev.title === title && prev.body_md === n.bodyMd;
+        prev.deleted_at === null && prev.type === n.type && prev.title === title && prev.body_md === n.bodyMd && prev.seq === seq;
       if (!same || prev.position !== position) changed = true;
-      update.run({ id: n.id, type: n.type, title, body_md: n.bodyMd, position, updated_at: same ? prev.updated_at : now });
+      update.run({ id: n.id, type: n.type, title, body_md: n.bodyMd, position, seq, updated_at: same ? prev.updated_at : now });
     } else {
       changed = true;
-      insert.run({ id: n.id, problem_id: problemId, type: n.type, title, body_md: n.bodyMd, position, now });
+      insert.run({ id: n.id, problem_id: problemId, type: n.type, title, body_md: n.bodyMd, position, seq: n.seq ?? null, now });
     }
   });
   return changed;
@@ -499,6 +495,7 @@ export function ensureRemoteImages(db: DB, urls: string[]): string[] {
     const id = randomUUID();
     const now = nowIso();
     insert.run(id, url, now, now);
+    recordRemoteImage(db, id);
     created.push(id);
   }
   return created;
@@ -515,7 +512,7 @@ function scheduleRemote(ctx: AppContext, ids: string[]): void {
   for (const id of ids) ctx.archiver.enqueue(id);
 }
 
-// ---------------------------------------------------------------- 题目
+// ---------------------------------------------------------------- 题目与资料的整体保存
 
 export interface ProblemWrite {
   title?: string | null | undefined;
@@ -531,97 +528,6 @@ export interface ProblemWrite {
   properties?: PropertyValueInput[] | undefined;
 }
 
-export function createProblem(ctx: AppContext, id: string, input: ProblemWrite): SaveResult<ProblemDTO> {
-  const { db } = ctx;
-  let remoteIds: string[] = [];
-  const created = db.transaction(() => {
-    if (getEntityRow(db, 'problem', id)) return false;
-    const now = nowIso();
-    db.prepare(
-      `INSERT INTO problems (id, title, subject, stage, source_note, created_at, updated_at, deleted_at, write_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-    ).run(
-      id,
-      normalizeShortText(input.title),
-      normalizeShortText(input.subject),
-      normalizeShortText(input.stage),
-      normalizeShortText(input.sourceNote),
-      now,
-      now,
-    );
-    const owner: Owner = { kind: 'problem', id };
-    writeBlocks(db, owner, input.blocks, now);
-    writeTags(db, owner, input.tags);
-    writeProperties(db, owner, input.properties);
-    writeNotes(db, id, input.notes, now);
-    writeSources(db, id, input.sources, now);
-    linkRawInputs(db, owner, input.rawInputIds);
-    remoteIds = ensureRemoteImages(db, markdownSourcesOf(input.blocks, input.notes).flatMap(remoteImageUrls));
-    reindex(db, 'problem', id);
-    return true;
-  })();
-  scheduleRemote(ctx, remoteIds);
-  return { entity: loadProblem(db, id)!, created, changed: created };
-}
-
-export function updateProblem(
-  ctx: AppContext,
-  id: string,
-  expectedVersion: number,
-  input: ProblemWrite,
-): SaveResult<ProblemDTO> {
-  const { db } = ctx;
-  let remoteIds: string[] = [];
-  const changed = db.transaction(() => {
-    const row = getEntityRow(db, 'problem', id);
-    if (!row) throw new AppError('NOT_FOUND', '题目不存在');
-    if (row.deleted_at) throw new AppError('CONFLICT', '该题目已在回收站中，请先恢复再编辑', { details: { currentVersion: row.write_version } });
-    if (row.write_version !== expectedVersion) {
-      throw new AppError('CONFLICT', '该题目已在其他页面被修改，本页内容未保存', {
-        details: { currentVersion: row.write_version, expectedVersion },
-      });
-    }
-    const now = nowIso();
-    const owner: Owner = { kind: 'problem', id };
-    const fields = {
-      title: normalizeShortText(input.title),
-      subject: normalizeShortText(input.subject),
-      stage: normalizeShortText(input.stage),
-      source_note: normalizeShortText(input.sourceNote),
-    };
-    let changed =
-      fields.title !== row.title ||
-      fields.subject !== row.subject ||
-      fields.stage !== row.stage ||
-      fields.source_note !== row.source_note;
-    if (changed) {
-      db.prepare('UPDATE problems SET title = ?, subject = ?, stage = ?, source_note = ? WHERE id = ?').run(
-        fields.title,
-        fields.subject,
-        fields.stage,
-        fields.source_note,
-        id,
-      );
-    }
-    changed = writeBlocks(db, owner, input.blocks, now) || changed;
-    changed = writeTags(db, owner, input.tags) || changed;
-    changed = writeProperties(db, owner, input.properties) || changed;
-    changed = writeNotes(db, id, input.notes, now) || changed;
-    changed = writeSources(db, id, input.sources, now) || changed;
-    linkRawInputs(db, owner, input.rawInputIds);
-    if (changed) {
-      db.prepare('UPDATE problems SET updated_at = ?, write_version = write_version + 1 WHERE id = ?').run(now, id);
-      remoteIds = ensureRemoteImages(db, markdownSourcesOf(input.blocks, input.notes).flatMap(remoteImageUrls));
-      reindex(db, 'problem', id);
-    }
-    return changed;
-  })();
-  scheduleRemote(ctx, remoteIds);
-  return { entity: loadProblem(db, id)!, changed };
-}
-
-// ---------------------------------------------------------------- 资料
-
 export interface MaterialWrite {
   title?: string | null | undefined;
   subject?: string | null | undefined;
@@ -635,93 +541,131 @@ export interface MaterialWrite {
   properties?: PropertyValueInput[] | undefined;
 }
 
-export function createMaterial(ctx: AppContext, id: string, input: MaterialWrite): SaveResult<MaterialDTO> {
-  const { db } = ctx;
-  let remoteIds: string[] = [];
-  const created = db.transaction(() => {
-    if (getEntityRow(db, 'material', id)) return false;
-    const now = nowIso();
-    db.prepare(
-      `INSERT INTO materials (id, title, subject, stage, source_note, status, created_at, updated_at, deleted_at, write_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-    ).run(
-      id,
-      normalizeShortText(input.title),
-      normalizeShortText(input.subject),
-      normalizeShortText(input.stage),
-      normalizeShortText(input.sourceNote),
-      input.status,
-      now,
-      now,
-    );
-    const owner: Owner = { kind: 'material', id };
-    writeBlocks(db, owner, input.blocks, now);
-    writeTags(db, owner, input.tags);
-    writeProperties(db, owner, input.properties);
-    linkRawInputs(db, owner, input.rawInputIds);
-    remoteIds = ensureRemoteImages(db, markdownSourcesOf(input.blocks).flatMap(remoteImageUrls));
-    reindex(db, 'material', id);
-    return true;
-  })();
-  scheduleRemote(ctx, remoteIds);
-  return { entity: loadMaterial(db, id)!, created, changed: created };
+interface WriteOf {
+  problem: ProblemWrite;
+  material: MaterialWrite;
 }
 
-export function updateMaterial(
+interface DtoOf {
+  problem: ProblemDTO;
+  material: MaterialDTO;
+}
+
+/** 两类对象的差异：标签文字、自身的列、只有题目才有的子表（笔记、来源）、Markdown 来源与读取。 */
+interface EntitySpec<K extends OwnerKind> {
+  label: string;
+  columns: (input: WriteOf[K]) => Record<string, string | null>;
+  /** 写入该类型特有的子表；返回是否有改动 */
+  writeExtra: (db: DB, id: string, input: WriteOf[K], now: string) => boolean;
+  markdown: (input: WriteOf[K]) => string[];
+  load: (db: DB, id: string) => DtoOf[K] | null;
+}
+
+const baseColumns = (input: ProblemWrite | MaterialWrite): Record<string, string | null> => ({
+  title: normalizeShortText(input.title),
+  subject: normalizeShortText(input.subject),
+  stage: normalizeShortText(input.stage),
+  source_note: normalizeShortText(input.sourceNote),
+});
+
+const ENTITY_SPEC: { [K in OwnerKind]: EntitySpec<K> } = {
+  problem: {
+    label: '题目',
+    columns: baseColumns,
+    writeExtra: (db, id, input, now) => {
+      let changed = writeNotes(db, id, input.notes, now);
+      changed = writeSources(db, id, input.sources, now) || changed;
+      return changed;
+    },
+    markdown: (input) => markdownSourcesOf(input.blocks, input.notes),
+    load: loadProblem,
+  },
+  material: {
+    label: '资料',
+    columns: (input) => ({ ...baseColumns(input), status: input.status }),
+    writeExtra: () => false,
+    markdown: (input) => markdownSourcesOf(input.blocks),
+    load: loadMaterial,
+  },
+};
+
+/**
+ * 整体保存一个题目或资料（一个事务）。
+ * - expectedVersion 为 null：新建；同 ID 已存在时不做任何事（重试安全）。
+ * - 否则按版本条件更新：版本不符或在回收站中返回 409；只有真正变化时才递增版本、重建检索投影。
+ */
+function saveEntity<K extends OwnerKind>(
   ctx: AppContext,
+  kind: K,
   id: string,
-  expectedVersion: number,
-  input: MaterialWrite,
-): SaveResult<MaterialDTO> {
+  expectedVersion: number | null,
+  input: WriteOf[K],
+): SaveResult<DtoOf[K]> {
   const { db } = ctx;
+  const spec = ENTITY_SPEC[kind] as EntitySpec<K>;
+  const table = ownerTable(kind);
   let remoteIds: string[] = [];
-  const changed = db.transaction(() => {
-    const row = getEntityRow(db, 'material', id);
-    if (!row) throw new AppError('NOT_FOUND', '资料不存在');
-    if (row.deleted_at) throw new AppError('CONFLICT', '该资料已在回收站中，请先恢复再编辑', { details: { currentVersion: row.write_version } });
-    if (row.write_version !== expectedVersion) {
-      throw new AppError('CONFLICT', '该资料已在其他页面被修改，本页内容未保存', {
-        details: { currentVersion: row.write_version, expectedVersion },
-      });
-    }
+  const result = db.transaction((): { created: boolean; changed: boolean } => {
+    const row = getEntityRow(db, kind, id);
     const now = nowIso();
-    const owner: Owner = { kind: 'material', id };
-    const fields = {
-      title: normalizeShortText(input.title),
-      subject: normalizeShortText(input.subject),
-      stage: normalizeShortText(input.stage),
-      source_note: normalizeShortText(input.sourceNote),
-      status: input.status,
-    };
-    let changed =
-      fields.title !== row.title ||
-      fields.subject !== row.subject ||
-      fields.stage !== row.stage ||
-      fields.source_note !== row.source_note ||
-      fields.status !== row.status;
-    if (changed) {
-      db.prepare('UPDATE materials SET title = ?, subject = ?, stage = ?, source_note = ?, status = ? WHERE id = ?').run(
-        fields.title,
-        fields.subject,
-        fields.stage,
-        fields.source_note,
-        fields.status,
-        id,
-      );
+    const owner: Owner = { kind, id };
+    const columns = spec.columns(input);
+    const names = Object.keys(columns);
+    if (expectedVersion === null) {
+      if (row) return { created: false, changed: false };
+      db.prepare(
+        `INSERT INTO ${table} (id, ${names.join(', ')}, created_at, updated_at, deleted_at, write_version)
+         VALUES (@id, ${names.map((n) => `@${n}`).join(', ')}, @now, @now, NULL, 1)`,
+      ).run({ id, ...columns, now });
+    } else {
+      if (!row) throw new AppError('NOT_FOUND', `${spec.label}不存在`);
+      if (row.deleted_at) {
+        throw new AppError('CONFLICT', `该${spec.label}已在回收站中，请先恢复再编辑`, { details: { currentVersion: row.write_version } });
+      }
+      if (row.write_version !== expectedVersion) {
+        throw new AppError('CONFLICT', `该${spec.label}已在其他页面被修改，本页内容未保存`, {
+          details: { currentVersion: row.write_version, expectedVersion },
+        });
+      }
+    }
+    let changed = false;
+    if (row) {
+      const current = row as unknown as Record<string, unknown>;
+      changed = names.some((n) => columns[n] !== current[n]);
+      if (changed) db.prepare(`UPDATE ${table} SET ${names.map((n) => `${n} = @${n}`).join(', ')} WHERE id = @id`).run({ id, ...columns });
     }
     changed = writeBlocks(db, owner, input.blocks, now) || changed;
     changed = writeTags(db, owner, input.tags) || changed;
     changed = writeProperties(db, owner, input.properties) || changed;
+    changed = spec.writeExtra(db, id, input, now) || changed;
     linkRawInputs(db, owner, input.rawInputIds);
-    if (changed) {
-      db.prepare('UPDATE materials SET updated_at = ?, write_version = write_version + 1 WHERE id = ?').run(now, id);
-      remoteIds = ensureRemoteImages(db, markdownSourcesOf(input.blocks).flatMap(remoteImageUrls));
-      reindex(db, 'material', id);
+    if (!row) recordCreated(db, kind, id);
+    else if (changed) bumpVersion(db, kind, id, now);
+    if (!row || changed) {
+      remoteIds = ensureRemoteImages(db, spec.markdown(input).flatMap(remoteImageUrls));
+      reindex(db, kind, id);
     }
-    return changed;
+    return row ? { created: false, changed } : { created: true, changed: true };
   })();
   scheduleRemote(ctx, remoteIds);
-  return { entity: loadMaterial(db, id)!, changed };
+  const entity = spec.load(db, id)!;
+  return expectedVersion === null ? { entity, created: result.created, changed: result.changed } : { entity, changed: result.changed };
+}
+
+export function createProblem(ctx: AppContext, id: string, input: ProblemWrite): SaveResult<ProblemDTO> {
+  return saveEntity(ctx, 'problem', id, null, input);
+}
+
+export function updateProblem(ctx: AppContext, id: string, expectedVersion: number, input: ProblemWrite): SaveResult<ProblemDTO> {
+  return saveEntity(ctx, 'problem', id, expectedVersion, input);
+}
+
+export function createMaterial(ctx: AppContext, id: string, input: MaterialWrite): SaveResult<MaterialDTO> {
+  return saveEntity(ctx, 'material', id, null, input);
+}
+
+export function updateMaterial(ctx: AppContext, id: string, expectedVersion: number, input: MaterialWrite): SaveResult<MaterialDTO> {
+  return saveEntity(ctx, 'material', id, expectedVersion, input);
 }
 
 /**
@@ -776,10 +720,10 @@ export function deriveProblemFromMaterial(
     // 同时适用于题目的属性（例如考点）一并带过来
     copyProperties(db, { kind: 'material', id: materialId }, { kind: 'problem', id: input.problemId });
     reindex(db, 'problem', input.problemId);
+    recordCreated(db, 'problem', input.problemId);
     if (input.markMaterialActive && material.status !== 'active') {
-      db.prepare(
-        "UPDATE materials SET status = 'active', updated_at = ?, write_version = write_version + 1 WHERE id = ?",
-      ).run(now, materialId);
+      db.prepare("UPDATE materials SET status = 'active' WHERE id = ?").run(materialId);
+      bumpVersion(db, 'material', materialId, now);
     }
     return true;
   })();
@@ -788,15 +732,17 @@ export function deriveProblemFromMaterial(
 
 // ---------------------------------------------------------------- 软删除与恢复
 
-/** 软删除/恢复的核心逻辑，不自带事务；返回新的版本号与是否变化。 */
+/**
+ * 软删除/恢复的核心逻辑，不自带事务；返回新的版本号与是否变化。
+ * 与其他真实变化一样递增版本并刷新 updated_at（在回收站里按删除时间排序用的是 deleted_at）。
+ */
 export function setDeletedTx(db: DB, kind: OwnerKind, id: string, deleted: boolean): { version: number; changed: boolean } {
   const row = getEntityRow(db, kind, id);
   if (!row) throw new AppError('NOT_FOUND', kind === 'problem' ? '题目不存在' : '资料不存在');
   if ((row.deleted_at !== null) === deleted) return { version: row.write_version, changed: false };
-  db.prepare(`UPDATE ${ownerTable(kind)} SET deleted_at = ?, write_version = write_version + 1 WHERE id = ?`).run(
-    deleted ? nowIso() : null,
-    id,
-  );
+  const now = nowIso();
+  db.prepare(`UPDATE ${ownerTable(kind)} SET deleted_at = ? WHERE id = ?`).run(deleted ? now : null, id);
+  bumpVersion(db, kind, id, now);
   return { version: row.write_version + 1, changed: true };
 }
 
@@ -816,7 +762,7 @@ export function restoreNote(ctx: AppContext, noteId: string): ProblemDTO {
       .get(note.problem_id) as { m: number };
     const now = nowIso();
     db.prepare('UPDATE notes SET deleted_at = NULL, position = ?, updated_at = ? WHERE id = ?').run(max.m + 1, now, noteId);
-    db.prepare('UPDATE problems SET updated_at = ?, write_version = write_version + 1 WHERE id = ?').run(now, note.problem_id);
+    bumpVersion(db, 'problem', note.problem_id, now);
     reindex(db, 'problem', note.problem_id);
     return note.problem_id;
   })();

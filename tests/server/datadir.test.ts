@@ -126,3 +126,23 @@ describe('数据目录与数据库', () => {
     }
   });
 });
+
+describe('server.json（运行中服务的地址，供命令行工具使用）', () => {
+  it('监听后写入（仅本人可读写），关闭时删除', async () => {
+    const { startServer, serverInfoPath } = await import('../../src/server/server.js');
+    const { silentLogger } = await import('../../src/server/context.js');
+    const dir = path.join(await makeTempDir(), 'data');
+    const s = await startServer({ dataDir: dir, port: 0, webDir: null, log: silentLogger });
+    try {
+      const file = serverInfoPath(s.library.paths.root);
+      const info = JSON.parse(fs.readFileSync(file, 'utf8'));
+      expect(info).toMatchObject({ pid: process.pid, port: s.port, url: s.url, bootId: s.ctx.sse.bootId });
+      if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+      const res = await fetch(`${info.url}/api/session`);
+      expect(res.status).toBe(200);
+    } finally {
+      await s.close();
+    }
+    expect(fs.existsSync(serverInfoPath(dir))).toBe(false);
+  });
+});

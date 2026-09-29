@@ -209,6 +209,8 @@ export const propertyUpdateSchema = z
     showInNav: z.boolean().optional(),
     appliesProblem: z.boolean().optional(),
     appliesMaterial: z.boolean().optional(),
+    /** 选项分层：可由平改为分层；有下级选项时不能改回 */
+    nested: z.boolean().optional(),
   })
   .strict();
 
@@ -231,6 +233,15 @@ export const optionMoveSchema = z
   })
   .strict();
 export const optionMergeSchema = z.object({ intoId: id }).strict();
+export const optionMergeManySchema = z.object({ ids: z.array(id).min(1).max(500), intoId: id }).strict();
+export const optionMoveManySchema = z
+  .object({
+    ids: z.array(id).min(1).max(500),
+    parentId: id.nullable(),
+    /** 在新父节点下（去掉这些选项后）的位置；省略表示放到最后 */
+    index: z.number().int().min(0).optional(),
+  })
+  .strict();
 export const optionPathSchema = z.object({ path: z.string().min(1).max(400) }).strict();
 export const outlineImportSchema = z.object({ outline: z.string().min(1).max(200_000) }).strict();
 

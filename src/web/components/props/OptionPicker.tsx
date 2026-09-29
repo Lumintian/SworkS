@@ -29,7 +29,14 @@ export function OptionPicker({
   const k = q.trim().toLowerCase();
   const shown = def.options.filter((o) => !k || o.path.toLowerCase().includes(k)).slice(0, 200);
   const typed = q.trim();
-  const exists = def.options.some((o) => o.path.toLowerCase() === typed.toLowerCase() || o.label.toLowerCase() === typed.toLowerCase());
+  // 只按完整路径判断是否已存在：同名的末级选项可以出现在不同上级下（例如“通用/选择”与“英语/选择”）
+  const typedPath = typed
+    .split('/')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .join('/')
+    .toLowerCase();
+  const exists = def.options.some((o) => o.path.toLowerCase() === typedPath);
   const canCreate = allowCreate && typed && !exists && (def.nested || !typed.includes('/'));
 
   const create = async () => {

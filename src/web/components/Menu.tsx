@@ -72,9 +72,9 @@ export function DropdownSub({ label, children }: { label: ReactNode; children: R
   );
 }
 
-export function ContextContent({ children }: { children: ReactNode }) {
+export function ContextContent({ children, container }: { children: ReactNode; container?: HTMLElement | null }) {
   return (
-    <ContextMenuPrimitive.Portal>
+    <ContextMenuPrimitive.Portal {...(container ? { container } : {})}>
       <ContextMenuPrimitive.Content className={CONTENT} collisionPadding={8}>
         {children}
       </ContextMenuPrimitive.Content>
@@ -82,13 +82,27 @@ export function ContextContent({ children }: { children: ReactNode }) {
   );
 }
 
-export function ContextItem({ children, onSelect, danger }: { children: ReactNode; onSelect: () => void; danger?: boolean }) {
+export function ContextItem({
+  children,
+  onSelect,
+  danger,
+  disabled,
+}: {
+  children: ReactNode;
+  onSelect: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
   return (
-    <ContextMenuPrimitive.Item className={ITEM} data-danger={danger || undefined} onSelect={onSelect}>
+    <ContextMenuPrimitive.Item className={ITEM} data-danger={danger || undefined} disabled={disabled} onSelect={onSelect}>
       <span className="w-4 flex-none" />
       {children}
     </ContextMenuPrimitive.Item>
   );
+}
+
+export function ContextLabel({ children }: { children: ReactNode }) {
+  return <ContextMenuPrimitive.Label className="menu-label">{children}</ContextMenuPrimitive.Label>;
 }
 
 export function ContextSeparator() {

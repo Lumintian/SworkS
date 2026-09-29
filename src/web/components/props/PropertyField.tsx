@@ -1,13 +1,87 @@
 /** 编辑页里的单个属性控件：按类型渲染（选项少的单选用分段按钮，其余选项类用选择器）。 */
 import { Plus, X } from 'lucide-react';
 import { useId, useState } from 'react';
-import type { PropertyDefDTO, PropertyValueDTO } from '@shared/api';
+import type { PropertyDefDTO, PropertyOptionDTO, PropertyValueDTO } from '@shared/api';
 import { Popover, PopoverContent, PopoverTrigger } from '../Menu';
 import { OptionPicker } from './OptionPicker';
 
-/** 选项数量不多、不分层的单选直接用分段按钮（例如难度、题型）。 */
+/** 选项数量不多、全部在顶层的单选直接用分段按钮（例如难度；题型还没有下级选项时也是）。 */
 function isSegmented(def: PropertyDefDTO): boolean {
-  return def.type === 'select' && !def.nested && def.options.length > 0 && def.options.length <= 8;
+  return def.type === 'select' && def.options.length > 0 && def.options.length <= 8 && def.options.every((o) => o.depth === 0);
+}
+
+/** 分层单选、选项总数不多且不超过三级（例如题型）：逐级用分段按钮，旁边可搜索或新建“上级/名称”。 */
+function isCascade(def: PropertyDefDTO): boolean {
+  return def.type === 'select' && def.nested && def.options.length > 0 && def.options.length <= 40 && def.options.every((o) => o.depth <= 2);
+}
+
+/**
+ * 逐级分段按钮：第一行是顶级选项；选中某项后，下一行出现它的下级。
+ * 可以只选上级（例如只知道是“英语”题）；再点一次已选项即清除。
+ */
+function CascadeSelect({
+  def,
+  selectedId,
+  onChange,
+}: {
+  def: PropertyDefDTO;
+  selectedId: string | undefined;
+  onChange: (v: PropertyValueDTO | undefined) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const byId = new Map(def.options.map((o) => [o.id, o]));
+  const childrenOf = (parentId: string | null) => def.options.filter((o) => o.parentId === parentId);
+  // 选中项及其各级上级（从顶级开始）
+  const chain: string[] = [];
+  for (let cur = selectedId ? byId.get(selectedId) : undefined; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) chain.unshift(cur.id);
+  const rows: { parent: PropertyOptionDTO | null; options: PropertyOptionDTO[] }[] = [{ parent: null, options: childrenOf(null) }];
+  for (const id of chain) {
+    const kids = childrenOf(id);
+    if (kids.length) rows.push({ parent: byId.get(id)!, options: kids });
+  }
+  const pick = (oid: string) => {
+    onChange(oid === selectedId ? undefined : { propertyId: def.id, optionIds: [oid] });
+    setOpen(false);
+  };
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => (
+        <div key={row.parent?.id ?? 'root'} className="flex flex-wrap items-center gap-1.5">
+          {row.parent ? <span className="text-xs text-ink-faint">{row.parent.label} ›</span> : null}
+          <div className="segmented flex-wrap" role="group" aria-label={row.parent ? `${def.name}：${row.parent.path} 的下级` : def.name}>
+            {row.options.map((o) => {
+              const on = o.id === selectedId;
+              const inChain = !on && chain.includes(o.id);
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  aria-pressed={on}
+                  data-ancestor={inChain || undefined}
+                  title={on ? '再点一次取消' : o.path}
+                  onClick={() => pick(o.id)}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          {row.parent === null ? (
+            <Popover open={open} onOpenChange={setOpen}>
+              <PopoverTrigger asChild>
+                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`搜索或新建${def.name}`}>
+                  <Plus size={14} />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent>
+                <OptionPicker def={def} selected={selectedId ? [selectedId] : []} onPick={pick} />
+              </PopoverContent>
+            </Popover>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function PropertyField({
@@ -24,6 +98,8 @@ export function PropertyField({
   const [open, setOpen] = useState(false);
   const selected = value?.optionIds ?? [];
   const segmented = isSegmented(def);
+
+  if (isCascade(def)) return <CascadeSelect def={def} selectedId={selected[0]} onChange={onChange} />;
 
   if (segmented) {
     return (

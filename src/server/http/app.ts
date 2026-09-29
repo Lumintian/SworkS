@@ -14,6 +14,8 @@ import {
   idListSchema,
   optionCreateSchema,
   optionMergeSchema,
+  optionMergeManySchema,
+  optionMoveManySchema,
   optionMoveSchema,
   optionPathSchema,
   optionUpdateSchema,
@@ -64,12 +66,15 @@ import {
   createOption,
   createPropertyDef,
   deleteOption,
+  deleteOptions,
   ensureOptionPath,
   getPropertyDef,
   importOutline,
   listPropertyDefs,
   mergeOption,
+  mergeOptions,
   moveOption,
+  moveOptions,
   renameOption,
   reorderPropertyDefs,
   setPropertyArchived,
@@ -299,6 +304,18 @@ export function createApp(ctx: AppContext): Hono {
     return c.json(mergeOption(ctx.db, uuidParam(c), input.intoId, makeToucher(ctx.db)));
   });
   app.post('/api/property-options/:id/delete', (c) => c.json(deleteOption(ctx.db, uuidParam(c), makeToucher(ctx.db))));
+  app.post('/api/property-options/delete-many', async (c) => {
+    const input = parse(idListSchema, await jsonBody(c));
+    return c.json(deleteOptions(ctx.db, input.ids, makeToucher(ctx.db)));
+  });
+  app.post('/api/property-options/merge-many', async (c) => {
+    const input = parse(optionMergeManySchema, await jsonBody(c));
+    return c.json(mergeOptions(ctx.db, input.ids, input.intoId, makeToucher(ctx.db)));
+  });
+  app.post('/api/property-options/move-many', async (c) => {
+    const input = parse(optionMoveManySchema, await jsonBody(c));
+    return c.json(moveOptions(ctx.db, input.ids, input.parentId, input.index, makeToucher(ctx.db)));
+  });
   app.post('/api/dict/:kind/add', async (c) => {
     const input = parse(dictValueSchema, await jsonBody(c));
     addDictEntry(ctx.db, c.req.param('kind'), input.value);

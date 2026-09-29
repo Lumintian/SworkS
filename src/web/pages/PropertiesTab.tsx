@@ -1,11 +1,12 @@
 /**
  * 数据管理 → 属性：新建自定义属性（名称、类型、是否分层、适用范围），
- * 调整顺序、改名、导航显示、归档；选中单选/多选属性后编辑它的选项树。
+ * 调整顺序、改名、导航显示、归档（也可右键打开菜单）；选中单选/多选属性后编辑它的选项树。
  */
-import { ArrowDown, ArrowUp, Archive, ArchiveRestore, Check, Pencil, Plus, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Archive, ArchiveRestore, Check, Eye, EyeOff, ListTree, Pencil, Plus, X } from 'lucide-react';
 import { useState } from 'react';
 import type { PropertyDefDTO } from '@shared/api';
 import { PROPERTY_TYPE_LABELS, PROPERTY_TYPES, type PropertyType } from '@shared/constants';
+import { ContextContent, ContextItem, ContextMenu, ContextSeparator, ContextTrigger } from '../components/Menu';
 import { OptionTreeEditor } from '../components/props/OptionTreeEditor';
 import { useConfirm, useToast } from '../components/ui';
 import { errorMessage, sendJSON } from '../lib/api';
@@ -13,7 +14,7 @@ import { newId } from '../lib/format';
 import { invalidateWrites } from '../lib/queryClient';
 
 const PRESET_HINT: Record<string, string> = {
-  qtype: '预置',
+  qtype: '预置，可分层，可按它排序',
   difficulty: '预置，可按它排序',
   knowledge: '预置考点树',
 };
@@ -106,6 +107,14 @@ export function PropertiesTab({ defs }: { defs: PropertyDefDTO[] }) {
     }
   };
   const update = (d: PropertyDefDTO, body: Record<string, unknown>, ok?: string) => call(() => sendJSON('PUT', `/api/properties/${d.id}`, body), ok);
+  const archive = async (d: PropertyDefDTO) => {
+    const ok = await confirm({
+      title: `归档属性“${d.name}”`,
+      message: '归档后它不再出现在编辑页、导航与检索中；已有的取值原样保留，取消归档即可恢复。',
+      confirmLabel: '归档',
+    });
+    if (ok) void call(() => sendJSON('POST', `/api/properties/${d.id}/archive`), '已归档');
+  };
   const move = (d: PropertyDefDTO, delta: number) => {
     const ids = live.map((x) => x.id);
     const i = ids.indexOf(d.id);
@@ -122,81 +131,117 @@ export function PropertiesTab({ defs }: { defs: PropertyDefDTO[] }) {
       </p>
       <CreateForm onCreated={(d) => setSelectedId(d.id)} />
       <ul className="space-y-1.5" aria-label="属性列表">
-        {live.map((d, i) => (
-          <li key={d.id} className="card-flat flex flex-wrap items-center gap-2 px-3 py-2 text-sm" data-active={selectedId === d.id || undefined}>
-            {renaming?.id === d.id ? (
-              <form
-                className="flex flex-1 items-center gap-1.5"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void update(d, { name: renaming.name }, '已改名').then(() => setRenaming(null));
-                }}
-              >
-                <input className="input py-1" value={renaming.name} autoFocus aria-label="属性新名称" onChange={(e) => setRenaming({ id: d.id, name: e.target.value })} />
-                <button type="submit" className="btn btn-sage btn-sm btn-icon" aria-label="确定">
-                  <Check size={14} />
-                </button>
-                <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="取消" onClick={() => setRenaming(null)}>
-                  <X size={14} />
-                </button>
-              </form>
-            ) : (
-              <button
-                type="button"
-                className={`min-w-0 flex-1 truncate text-left font-semibold ${selectedId === d.id ? 'text-sage-deep underline' : 'text-stone'}`}
-                onClick={() => setSelectedId(d.id)}
-                title={d.type === 'select' || d.type === 'multiselect' ? '编辑选项' : undefined}
-              >
-                {d.name}
-                <span className="ml-2 text-xs font-normal text-ink-faint">
-                  {PROPERTY_TYPE_LABELS[d.type]}
-                  {d.nested ? '·分层' : ''}
-                  {d.type === 'select' || d.type === 'multiselect' ? ` · ${d.options.length} 个选项` : ''}
-                  {d.preset ? ` · ${PRESET_HINT[d.preset]}` : ''}
-                </span>
-              </button>
-            )}
-            <label className="flex items-center gap-1 text-xs text-ink-soft">
-              <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.appliesProblem} onChange={(e) => void update(d, { appliesProblem: e.target.checked })} />
-              题目
-            </label>
-            <label className="flex items-center gap-1 text-xs text-ink-soft">
-              <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.appliesMaterial} onChange={(e) => void update(d, { appliesMaterial: e.target.checked })} />
-              资料
-            </label>
-            {d.type === 'select' || d.type === 'multiselect' || d.type === 'checkbox' ? (
-              <label className="flex items-center gap-1 text-xs text-ink-soft">
-                <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.showInNav} onChange={(e) => void update(d, { showInNav: e.target.checked })} />
-                导航显示
-              </label>
-            ) : null}
-            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`上移 ${d.name}`} disabled={i === 0} onClick={() => move(d, -1)}>
-              <ArrowUp size={14} />
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`下移 ${d.name}`} disabled={i === live.length - 1} onClick={() => move(d, 1)}>
-              <ArrowDown size={14} />
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRenaming({ id: d.id, name: d.name })}>
-              <Pencil size={14} /> 改名
-            </button>
-            {d.preset ? null : (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={async () => {
-                  const ok = await confirm({
-                    title: `归档属性“${d.name}”`,
-                    message: '归档后它不再出现在编辑页、导航与检索中；已有的取值原样保留，取消归档即可恢复。',
-                    confirmLabel: '归档',
-                  });
-                  if (ok) void call(() => sendJSON('POST', `/api/properties/${d.id}/archive`), '已归档');
-                }}
-              >
-                <Archive size={14} /> 归档
-              </button>
-            )}
-          </li>
-        ))}
+        {live.map((d, i) => {
+          const hasOptions = d.type === 'select' || d.type === 'multiselect';
+          return (
+            <ContextMenu key={d.id}>
+              <ContextTrigger asChild>
+                <li className="card-flat flex flex-wrap items-center gap-2 px-3 py-2 text-sm" data-active={selectedId === d.id || undefined}>
+                  {renaming?.id === d.id ? (
+                    <form
+                      className="flex flex-1 items-center gap-1.5"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void update(d, { name: renaming.name }, '已改名').then(() => setRenaming(null));
+                      }}
+                    >
+                      <input className="input py-1" value={renaming.name} autoFocus aria-label="属性新名称" onChange={(e) => setRenaming({ id: d.id, name: e.target.value })} />
+                      <button type="submit" className="btn btn-sage btn-sm btn-icon" aria-label="确定">
+                        <Check size={14} />
+                      </button>
+                      <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="取消" onClick={() => setRenaming(null)}>
+                        <X size={14} />
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className={`min-w-0 flex-1 truncate text-left font-semibold ${selectedId === d.id ? 'text-sage-deep underline' : 'text-stone'}`}
+                      onClick={() => setSelectedId(d.id)}
+                      title={hasOptions ? '编辑选项' : undefined}
+                    >
+                      {d.name}
+                      <span className="ml-2 text-xs font-normal text-ink-faint">
+                        {PROPERTY_TYPE_LABELS[d.type]}
+                        {hasOptions ? ` · ${d.options.length} 个选项` : ''}
+                        {d.preset ? ` · ${PRESET_HINT[d.preset]}` : ''}
+                      </span>
+                    </button>
+                  )}
+                  <label className="flex items-center gap-1 text-xs text-ink-soft">
+                    <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.appliesProblem} onChange={(e) => void update(d, { appliesProblem: e.target.checked })} />
+                    题目
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-ink-soft">
+                    <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.appliesMaterial} onChange={(e) => void update(d, { appliesMaterial: e.target.checked })} />
+                    资料
+                  </label>
+                  {hasOptions ? (
+                    <label className="flex items-center gap-1 text-xs text-ink-soft" title="选项可以有上下级，例如“英语/完型填空”">
+                      <input
+                        type="checkbox"
+                        className="accent-[var(--color-sage-deep)]"
+                        checked={d.nested}
+                        aria-label={`${d.name}的选项分层`}
+                        onChange={(e) => void update(d, { nested: e.target.checked }, e.target.checked ? `“${d.name}”的选项可以分层了` : `“${d.name}”的选项已取消分层`)}
+                      />
+                      分层
+                    </label>
+                  ) : null}
+                  {hasOptions || d.type === 'checkbox' ? (
+                    <label className="flex items-center gap-1 text-xs text-ink-soft">
+                      <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={d.showInNav} onChange={(e) => void update(d, { showInNav: e.target.checked })} />
+                      导航显示
+                    </label>
+                  ) : null}
+                  <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`上移 ${d.name}`} disabled={i === 0} onClick={() => move(d, -1)}>
+                    <ArrowUp size={14} />
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`下移 ${d.name}`} disabled={i === live.length - 1} onClick={() => move(d, 1)}>
+                    <ArrowDown size={14} />
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRenaming({ id: d.id, name: d.name })}>
+                    <Pencil size={14} /> 改名
+                  </button>
+                  {d.preset ? null : (
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void archive(d)}>
+                      <Archive size={14} /> 归档
+                    </button>
+                  )}
+                </li>
+              </ContextTrigger>
+              <ContextContent>
+                {hasOptions ? (
+                  <ContextItem onSelect={() => setSelectedId(d.id)}>
+                    <ListTree size={13} /> 编辑选项
+                  </ContextItem>
+                ) : null}
+                <ContextItem onSelect={() => setRenaming({ id: d.id, name: d.name })}>
+                  <Pencil size={13} /> 改名
+                </ContextItem>
+                {hasOptions || d.type === 'checkbox' ? (
+                  <ContextItem onSelect={() => void update(d, { showInNav: !d.showInNav }, d.showInNav ? '已从导航中隐藏' : '已在导航中显示')}>
+                    {d.showInNav ? <EyeOff size={13} /> : <Eye size={13} />} {d.showInNav ? '不在导航中显示' : '在导航中显示'}
+                  </ContextItem>
+                ) : null}
+                <ContextItem onSelect={() => move(d, -1)} disabled={i === 0}>
+                  <ArrowUp size={13} /> 上移
+                </ContextItem>
+                <ContextItem onSelect={() => move(d, 1)} disabled={i === live.length - 1}>
+                  <ArrowDown size={13} /> 下移
+                </ContextItem>
+                {d.preset ? null : (
+                  <>
+                    <ContextSeparator />
+                    <ContextItem danger onSelect={() => void archive(d)}>
+                      <Archive size={13} /> 归档
+                    </ContextItem>
+                  </>
+                )}
+              </ContextContent>
+            </ContextMenu>
+          );
+        })}
       </ul>
       {archived.length ? (
         <details className="text-sm">

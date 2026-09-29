@@ -435,7 +435,13 @@ export function createPropertyDef(
 export function updatePropertyDef(
   db: DB,
   id: string,
-  input: { name?: string | undefined; showInNav?: boolean | undefined; appliesProblem?: boolean | undefined; appliesMaterial?: boolean | undefined },
+  input: {
+    name?: string | undefined;
+    showInNav?: boolean | undefined;
+    appliesProblem?: boolean | undefined;
+    appliesMaterial?: boolean | undefined;
+    nested?: boolean | undefined;
+  },
   touch: TouchOwner,
 ): PropertyDefDTO {
   return db.transaction(() => {
@@ -445,11 +451,20 @@ export function updatePropertyDef(
     const am = input.appliesMaterial ?? d.applies_material === 1;
     if (!ap && !am) throw new AppError('VALIDATION', '属性至少要适用于题目或资料之一');
     const showInNav = input.showInNav ?? d.show_in_nav === 1;
-    db.prepare('UPDATE property_defs SET name = ?, applies_problem = ?, applies_material = ?, show_in_nav = ?, updated_at = ? WHERE id = ?').run(
+    // 选项分层：平 → 分层随时可以（选项都在顶层，路径不变）；分层 → 平要求没有下级选项。取值与路径都不变，无需递增版本。
+    const nested = input.nested ?? d.nested === 1;
+    if (nested !== (d.nested === 1)) {
+      if (!OPTION_TYPES.includes(d.type)) throw new AppError('VALIDATION', '只有单选、多选属性的选项可以分层');
+      if (!nested && db.prepare('SELECT 1 FROM property_options WHERE property_id = ? AND parent_id IS NOT NULL AND deleted_at IS NULL LIMIT 1').get(d.id)) {
+        throw new AppError('VALIDATION', `“${d.name}”还有下级选项，请先把它们移到顶级或合并，再取消分层`);
+      }
+    }
+    db.prepare('UPDATE property_defs SET name = ?, applies_problem = ?, applies_material = ?, show_in_nav = ?, nested = ?, updated_at = ? WHERE id = ?').run(
       name,
       ap ? 1 : 0,
       am ? 1 : 0,
       showInNav ? 1 : 0,
+      nested ? 1 : 0,
       nowIso(),
       d.id,
     );
@@ -576,41 +591,86 @@ export function renameOption(db: DB, optionId: string, rawLabel: string, touch: 
 }
 
 export function moveOption(db: DB, optionId: string, parentIdRaw: string | null, index: number | undefined, touch: TouchOwner): PropertyDefDTO {
+  return moveOptions(db, [optionId], parentIdRaw, index, touch);
+}
+
+/**
+ * 把多个选项（同一属性）移到 parent 下的 index 位置，保持它们给定的相对顺序；
+ * 被其他所选项包含的后代跟着上级一起走，不单独移动。index 按“去掉这些选项后”的同级列表计算，省略表示放到最后。
+ * 选项按 ID 保存，移动只重建检索投影（路径变了），不递增版本。
+ */
+export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: string | null, index: number | undefined, touch: TouchOwner): PropertyDefDTO {
   return db.transaction(() => {
-    const o = getOption(db, optionId);
-    const d = getDef(db, o.property_id);
-    const parentId = parentIdRaw?.toLowerCase() ?? null;
+    const opts = [...new Set(optionIds.map((x) => x.toLowerCase()))].map((id) => getOption(db, id));
+    if (opts.length === 0) throw new AppError('VALIDATION', '没有要移动的选项');
+    const d = getDef(db, opts[0]!.property_id);
+    if (opts.some((o) => o.property_id !== d.id)) throw new AppError('VALIDATION', '只能一起移动同一属性的选项');
     const tree = optionTreeOf(db, d.id);
+    // 只保留最上层：某个选项的上级也被选中时，它随上级移动
+    const selected = new Set(opts.map((o) => o.id));
+    const hasSelectedAncestor = (o: OptionRow) => {
+      for (let p = o.parent_id; p; p = tree.byId.get(p)?.parentId ?? null) if (selected.has(p)) return true;
+      return false;
+    };
+    const moving = opts.filter((o) => !hasSelectedAncestor(o));
+    const parentId = parentIdRaw?.toLowerCase() ?? null;
     if (parentId) {
       if (!d.nested) throw new AppError('VALIDATION', `属性“${d.name}”的选项不分层`);
       const p = getOption(db, parentId);
       if (p.property_id !== d.id) throw new AppError('VALIDATION', '上级选项不属于这个属性');
-      if (optionSubtree(tree, o.id).includes(parentId)) throw new AppError('VALIDATION', '不能把选项移动到它自己的下级');
+      if (moving.some((o) => optionSubtree(tree, o.id).includes(parentId))) throw new AppError('VALIDATION', '不能把选项移动到它自己的下级');
     }
-    if (parentId !== o.parent_id && siblingByLabel(db, d.id, parentId, o.label, o.id)) throw new AppError('CONFLICT', `目标位置已有“${o.label}”，可以改用合并`);
-    const siblings = (tree.children.get(parentId) ?? []).filter((x) => x !== o.id);
+    const labels = new Set<string>();
+    for (const o of moving) {
+      const k = o.label.toLowerCase();
+      if (labels.has(k)) throw new AppError('CONFLICT', `所选选项中有同名的“${o.label}”，不能放到同一层级，可以改用合并`);
+      labels.add(k);
+      if (parentId !== o.parent_id && siblingByLabel(db, d.id, parentId, o.label, o.id)) throw new AppError('CONFLICT', `目标位置已有“${o.label}”，可以改用合并`);
+    }
+    const movingIds = new Set(moving.map((o) => o.id));
+    const siblings = (tree.children.get(parentId) ?? []).filter((x) => !movingIds.has(x));
     const at = index === undefined ? siblings.length : Math.min(index, siblings.length);
-    siblings.splice(at, 0, o.id);
+    siblings.splice(at, 0, ...moving.map((o) => o.id));
     const now = nowIso();
-    db.prepare('UPDATE property_options SET parent_id = ?, updated_at = ? WHERE id = ?').run(parentId, now, o.id);
+    const setParent = db.prepare('UPDATE property_options SET parent_id = ?, updated_at = ? WHERE id = ?');
+    for (const o of moving) if (o.parent_id !== parentId) setParent.run(parentId, now, o.id);
     const setPos = db.prepare('UPDATE property_options SET position = ? WHERE id = ?');
     siblings.forEach((id, i) => setPos.run(i, id));
-    if (parentId !== o.parent_id) for (const owner of ownersOfOptions(db, optionSubtree(tree, o.id))) touch(owner, false);
+    for (const o of moving) {
+      if (parentId !== o.parent_id) for (const owner of ownersOfOptions(db, optionSubtree(tree, o.id))) touch(owner, false);
+    }
     return getPropertyDef(db, d.id);
   })();
 }
 
 /** 删除选项（含子树）：选项软删除，对象上的这些取值移除（递增版本）。 */
 export function deleteOption(db: DB, optionId: string, touch: TouchOwner): { deleted: number; affectedItems: number } {
+  return deleteOptions(db, [optionId], touch);
+}
+
+/** 一次删除多个选项（各含子树，可跨属性）：子树取并集，一个事务，每个对象只递增一次版本。 */
+export function deleteOptions(db: DB, optionIds: readonly string[], touch: TouchOwner): { deleted: number; affectedItems: number } {
   return db.transaction(() => {
-    const o = getOption(db, optionId);
-    const ids = optionSubtree(optionTreeOf(db, o.property_id), o.id);
-    const owners = ownersOfOptions(db, ids);
-    const ph = placeholders(ids.length);
-    db.prepare(`DELETE FROM property_values WHERE option_id IN (${ph})`).run(...ids);
-    db.prepare(`UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id IN (${ph})`).run(nowIso(), nowIso(), ...ids);
+    const ids = new Set<string>();
+    const trees = new Map<string, OptionTree>();
+    for (const raw of new Set(optionIds.map((x) => x.toLowerCase()))) {
+      if (ids.has(raw)) continue; // 已在某个所选上级的子树里
+      const o = getOption(db, raw);
+      let tree = trees.get(o.property_id);
+      if (!tree) {
+        tree = optionTreeOf(db, o.property_id);
+        trees.set(o.property_id, tree);
+      }
+      for (const id of optionSubtree(tree, o.id)) ids.add(id);
+    }
+    const list = [...ids];
+    const owners = ownersOfOptions(db, list);
+    const ph = placeholders(list.length);
+    const now = nowIso();
+    db.prepare(`DELETE FROM property_values WHERE option_id IN (${ph})`).run(...list);
+    db.prepare(`UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id IN (${ph})`).run(now, now, ...list);
     for (const owner of owners) touch(owner, true);
-    return { deleted: ids.length, affectedItems: owners.length };
+    return { deleted: list.length, affectedItems: owners.length };
   })();
 }
 
@@ -658,6 +718,34 @@ export function mergeOption(db: DB, sourceId: string, targetId: string, touch: T
     }
     for (const o of reindexOnly.values()) touch(o, false);
     return { affectedItems: bumped.size };
+  })();
+}
+
+/**
+ * 把多个选项合并到同一个目标：先整体校验（同一属性、目标不在任何源的子树内），再逐个合并；
+ * 源的上级也被选中时随上级一起合并。一个事务，每个对象只递增一次版本。
+ */
+export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: string, touch: TouchOwner): { merged: number; affectedItems: number } {
+  return db.transaction(() => {
+    const dst = getOption(db, targetId);
+    const tree = optionTreeOf(db, dst.property_id);
+    const srcs = [...new Set(sourceIds.map((x) => x.toLowerCase()))].filter((id) => id !== dst.id).map((id) => getOption(db, id));
+    for (const s of srcs) {
+      if (s.property_id !== dst.property_id) throw new AppError('VALIDATION', '只能合并同一属性的选项');
+      if (optionSubtree(tree, s.id).includes(dst.id)) throw new AppError('VALIDATION', `不能把“${s.label}”合并到它自己的下级`);
+    }
+    const selected = new Set(srcs.map((s) => s.id));
+    const topmost = srcs.filter((s) => {
+      for (let p = s.parent_id; p; p = tree.byId.get(p)?.parentId ?? null) if (selected.has(p)) return false;
+      return true;
+    });
+    const bumped = new Set<string>();
+    const counting: TouchOwner = (o, bump) => {
+      if (bump) bumped.add(`${o.kind}:${o.id}`);
+      touch(o, bump);
+    };
+    for (const s of topmost) mergeOption(db, s.id, dst.id, counting);
+    return { merged: topmost.length, affectedItems: bumped.size };
   })();
 }
 

@@ -1,5 +1,7 @@
 /** 前后端共享的请求校验 schema 与响应类型。 */
 import { z } from 'zod';
+import type { ListSort } from './listFilters.js';
+import type { Diagnostic } from './query/ast.js';
 import {
   ATTEMPT_RESULTS,
   BLOCK_KINDS,
@@ -551,6 +553,14 @@ export interface ListItemDTO {
   /** 按学生筛选时：该学生在这道题上的作答摘要（没做过为 null） */
   attempt?: AttemptSummaryDTO | null;
   hits: SearchField[];
+  /** 命中片段（只在有正向自由词时生成）：ranges 是 text 中需要高亮的区间 */
+  snippets?: SnippetDTO[];
+}
+
+export interface SnippetDTO {
+  field: SearchField;
+  text: string;
+  ranges: [number, number][];
 }
 
 export interface ListResponse {
@@ -558,6 +568,12 @@ export interface ListResponse {
   total: number;
   offset: number;
   limit: number;
+  /** 实际使用的排序（sort 省略时按是否有自由词决定） */
+  sortApplied: ListSort;
+  /** 查询文本的诊断（语法警告、未知选项等） */
+  diagnostics: Diagnostic[];
+  /** 列表的“按学生查看”上下文：地址栏的 student 参数，或查询里第一个正向的学生条件 */
+  studentId: string | null;
 }
 
 export interface ListIdsResponse {

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import { openDatabase, quickCheck, type DB } from './db/connection.js';
-import { migrate, type Migration, type MigrationResult } from './db/migrations.js';
+import { LATEST_SCHEMA_VERSION, migrate, schemaVersion, type Migration, type MigrationResult } from './db/migrations.js';
+import { ensureSearchIndexVersion } from './services/search.js';
 import { AppError } from './errors.js';
 import { dataPaths, DB_FILE, LOCK_FILE, type DataPaths } from './paths.js';
 
@@ -104,7 +105,7 @@ export interface OpenedLibrary {
  */
 export async function openLibrary(
   root: string,
-  opts: { purpose?: string; migrations?: Migration[] } = {},
+  opts: { purpose?: string; migrations?: Migration[]; log?: (msg: string) => void } = {},
 ): Promise<OpenedLibrary> {
   const paths = dataPaths(root);
   const state = inspectDataDir(paths.root);
@@ -131,6 +132,8 @@ export async function openLibrary(
       tmpDir: paths.tmp,
       ...(opts.migrations ? { migrations: opts.migrations } : {}),
     });
+    // 检索规则变化（或刚升级）时整体重建检索投影；只在结构已是最新版本时做（测试会只迁移到旧版本）
+    if (schemaVersion(db) === LATEST_SCHEMA_VERSION) ensureSearchIndexVersion(db, opts.log);
     const opened = db;
     return {
       paths,

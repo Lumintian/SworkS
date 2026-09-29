@@ -128,8 +128,17 @@ export function optionSubtree(tree: OptionTree, id: string): string[] {
   return out;
 }
 
-/** 全部未删除选项的完整路径（用于检索投影与列表显示）。 */
-function allOptionPaths(db: DB): Map<string, string> {
+/**
+ * 全部未删除选项的完整路径与树内顺序（用于检索投影与列表显示）。
+ * 一次读出、多次使用：列表一页、重建全部检索投影时共用一份，不必每个对象都重读选项树。
+ */
+export interface OptionIndex {
+  paths: Map<string, string>;
+  /** 选项在所属属性的深度优先顺序中的位置 */
+  order: Map<string, number>;
+}
+
+export function optionIndex(db: DB): OptionIndex {
   const rows = db.prepare('SELECT * FROM property_options WHERE deleted_at IS NULL').all() as OptionRow[];
   const byProp = new Map<string, OptionRow[]>();
   for (const r of rows) {
@@ -137,9 +146,15 @@ function allOptionPaths(db: DB): Map<string, string> {
     list.push(r);
     byProp.set(r.property_id, list);
   }
-  const out = new Map<string, string>();
-  for (const list of byProp.values()) for (const o of buildOptionTree(list).ordered) out.set(o.id, o.path);
-  return out;
+  const paths = new Map<string, string>();
+  const order = new Map<string, number>();
+  for (const list of byProp.values()) {
+    buildOptionTree(list).ordered.forEach((o, i) => {
+      paths.set(o.id, o.path);
+      order.set(o.id, i);
+    });
+  }
+  return { paths, order };
 }
 
 function toDefDTO(d: DefRow, options: PropertyOptionDTO[]): PropertyDefDTO {
@@ -179,7 +194,7 @@ function formatNumber(n: number): string {
 }
 
 /** 对象上（受管理属性的）取值，按属性顺序；多选的选项按树的顺序。 */
-export function loadPropertyValues(db: DB, owner: Owner): PropertyValueDTO[] {
+export function loadPropertyValues(db: DB, owner: Owner, idx?: OptionIndex): PropertyValueDTO[] {
   const rows = ownerValueRows(db, owner);
   if (rows.length === 0) return [];
   const out: PropertyValueDTO[] = [];
@@ -187,8 +202,7 @@ export function loadPropertyValues(db: DB, owner: Owner): PropertyValueDTO[] {
     const mine = rows.filter((r) => r.property_id === d.id);
     if (mine.length === 0) continue;
     if (OPTION_TYPES.includes(d.type)) {
-      const tree = optionTreeOf(db, d.id);
-      const order = new Map(tree.ordered.map((o, i) => [o.id, i]));
+      const order = idx?.order ?? new Map(optionTreeOf(db, d.id).ordered.map((o, i) => [o.id, i]));
       const ids = mine
         .map((r) => r.option_id!)
         .filter((id) => order.has(id))
@@ -203,11 +217,12 @@ export function loadPropertyValues(db: DB, owner: Owner): PropertyValueDTO[] {
 }
 
 /** 列表与导出用的显示文字：选项为完整路径，勾选为“是”。 */
-export function propertyDisplay(db: DB, owner: Owner, paths?: Map<string, string>): { propertyId: string; name: string; type: PropertyType; values: string[] }[] {
-  const values = loadPropertyValues(db, owner);
+export function propertyDisplay(db: DB, owner: Owner, idx?: OptionIndex): { propertyId: string; name: string; type: PropertyType; values: string[] }[] {
+  const i = idx ?? optionIndex(db);
+  const values = loadPropertyValues(db, owner, i);
   if (values.length === 0) return [];
   const defs = new Map(managedDefs(db, owner.kind).map((d) => [d.id, d]));
-  const p = paths ?? allOptionPaths(db);
+  const p = i.paths;
   return values.map((v) => {
     const d = defs.get(v.propertyId)!;
     let shown: string[];
@@ -221,8 +236,8 @@ export function propertyDisplay(db: DB, owner: Owner, paths?: Map<string, string
 }
 
 /** 检索投影中的属性文本。 */
-export function propertyIndexTexts(db: DB, owner: Owner): string[] {
-  return propertyDisplay(db, owner)
+export function propertyIndexTexts(db: DB, owner: Owner, idx?: OptionIndex): string[] {
+  return propertyDisplay(db, owner, idx)
     .filter((p) => p.type !== 'checkbox')
     .flatMap((p) => p.values);
 }
@@ -695,10 +710,19 @@ export function expandOptionFilter(db: DB, propertyId: string, optionIds: readon
   return [...out];
 }
 
-/** 某个属性是否可以用于排序（不分层的单选）。 */
+/** 某个属性是否可以用于排序（未归档的单选，分层与否都可以）。 */
 export function isSortableProperty(db: DB, propertyId: string): boolean {
   const d = db.prepare('SELECT * FROM property_defs WHERE id = ?').get(propertyId) as DefRow | undefined;
-  return Boolean(d && d.archived_at === null && d.type === 'select' && d.nested === 0);
+  return Boolean(d && d.archived_at === null && d.type === 'select');
+}
+
+/**
+ * 按选项排序时的顺序：选项树的深度优先顺序（上级在前、同级按位置），不分层时即选项位置顺序。
+ * 不可排序时返回 null。
+ */
+export function sortableOptionOrder(db: DB, propertyId: string): string[] | null {
+  if (!isSortableProperty(db, propertyId)) return null;
+  return optionTreeOf(db, propertyId).ordered.map((o) => o.id);
 }
 
 export interface NavPropertyCounts {

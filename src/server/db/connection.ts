@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { normText } from '../../shared/query/normalize.js';
 import { AppError } from '../errors.js';
 
 export type DB = Database.Database;
@@ -26,6 +27,8 @@ export function openDatabase(file: string, opts: OpenOptions = {}): DB {
       db.pragma('synchronous = FULL');
     }
     verifyPragmas(db, !opts.readonly);
+    // 检索用的规范化（NFKC + 小写 + 折叠空白），与检索投影、查询词一致；文本属性的子串匹配用它
+    db.function('sworks_norm', { deterministic: true }, (v: unknown) => (typeof v === 'string' ? normText(v) : null));
   } catch (err) {
     db.close();
     throw err;

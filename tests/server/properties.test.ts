@@ -166,6 +166,63 @@ describe('属性筛选、排序与导航', () => {
     expect(kpNav.none).toBe(1);
   });
 
+  it('分层单选（题型）按选项树的深度优先顺序排序：上级在前，下级紧随其后，未设置在最后', async () => {
+    t = await makeTestApp();
+    const qt = await preset(t, 'qtype');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${qt.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    // 顶层原有 单选/多选/填空/解答/判断，再建 英语/完型填空、英语/语法填空（英语排在最后）
+    const cloze = await ensure('英语/完型填空');
+    const grammar = await ensure('英语/语法填空');
+    const english = (await preset(t, 'qtype')).options.find((o) => o.path === '英语')!.id;
+    const a = await create(t, { properties: [{ propertyId: qt.id, optionIds: [grammar] }] });
+    const b = await create(t, { properties: [{ propertyId: qt.id, optionIds: [opt(qt, '填空')] }] });
+    const c = await create(t, { properties: [{ propertyId: qt.id, optionIds: [english] }] });
+    const d = await create(t, { properties: [{ propertyId: qt.id, optionIds: [cloze] }] });
+    const e = await create(t);
+    const ids = (await t.json('GET', `/api/problems?fields=ids&sort=prop:${qt.id}`)).body.ids;
+    expect(ids).toEqual([b.id, c.id, d.id, a.id, e.id]);
+  });
+
+  it('选项分层开关：平 → 分层随时可以；有下级选项时不能改回；非选项类属性不能分层；不递增题目版本', async () => {
+    t = await makeTestApp();
+    const pid = newId();
+    const made = await t.json('POST', '/api/properties', { id: pid, name: '来源类型', type: 'select' });
+    expect(made.body.nested).toBe(false);
+    const root = (await t.json('POST', `/api/properties/${pid}/options/ensure-path`, { path: '高考' })).body.optionId;
+    // 不分层时不能建多级路径
+    expect((await t.json('POST', `/api/properties/${pid}/options/ensure-path`, { path: '高考/全国卷' })).status).toBe(400);
+    const p = await create(t, { properties: [{ propertyId: pid, optionIds: [root] }] });
+    let r = await t.json('PUT', `/api/properties/${pid}`, { nested: true });
+    expect(r.status).toBe(200);
+    expect(r.body.nested).toBe(true);
+    const child = (await t.json('POST', `/api/properties/${pid}/options/ensure-path`, { path: '高考/全国卷' })).body.optionId;
+    // 有下级时不能取消分层
+    r = await t.json('PUT', `/api/properties/${pid}`, { nested: false });
+    expect(r.status).toBe(400);
+    expect(r.body.error.message).toContain('下级选项');
+    // 把下级移到顶级后可以取消
+    await t.json('POST', `/api/property-options/${child}/move`, { parentId: null });
+    r = await t.json('PUT', `/api/properties/${pid}`, { nested: false });
+    expect(r.status).toBe(200);
+    expect(r.body.nested).toBe(false);
+    expect(version(t, p.id)).toBe(1);
+    // 文本属性不能分层
+    const text = (await t.json('POST', '/api/properties', { id: newId(), name: '出处', type: 'text' })).body;
+    expect((await t.json('PUT', `/api/properties/${text.id}`, { nested: true })).status).toBe(400);
+  });
+
+  it('分层选项的末级名可以在不同上级下重名（通用/选择 与 英语/选择）', async () => {
+    t = await makeTestApp();
+    const qt = await preset(t, 'qtype');
+    const a = (await t.json('POST', `/api/properties/${qt.id}/options/ensure-path`, { path: '通用/选择' })).body.optionId;
+    const b = (await t.json('POST', `/api/properties/${qt.id}/options/ensure-path`, { path: '英语/选择' })).body.optionId;
+    expect(a).not.toBe(b);
+    const paths = (await preset(t, 'qtype')).options.map((o) => o.path);
+    expect(paths).toEqual(expect.arrayContaining(['通用/选择', '英语/选择']));
+    // 再次确保同一路径得到同一个选项
+    expect((await t.json('POST', `/api/properties/${qt.id}/options/ensure-path`, { path: '英语 / 选择' })).body.optionId).toBe(b);
+  });
+
   it('批量设置属性、追加与移除多选项', async () => {
     t = await makeTestApp();
     const diff = await preset(t, 'difficulty');
@@ -288,5 +345,65 @@ describe('选项管理', () => {
     const pid = newId();
     const r = await t.json('POST', `/api/materials/${m.id}/derive`, { problemId: pid, blockIds: [m.blocks[0].id] });
     expect(r.body.entity.properties).toEqual([{ propertyId: kp.id, optionIds: [x] }]);
+  });
+});
+
+describe('选项的多选批量操作', () => {
+  it('一次删除多个选项：父子同选按子树并集；每个对象只递增一次；取值被移除', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const fn = await ensure('函数');
+    const mono = await ensure('函数/单调性');
+    const seq = await ensure('数列');
+    const keep = await ensure('几何');
+    const a = await create(t, { properties: [{ propertyId: kp.id, optionIds: [mono, seq, keep] }] });
+    const res = await t.json('POST', '/api/property-options/delete-many', { ids: [mono, fn, seq] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ deleted: 3, affectedItems: 1 });
+    expect(version(t, a.id)).toBe(2);
+    expect((await t.json('GET', `/api/problems/${a.id}`)).body.properties).toEqual([{ propertyId: kp.id, optionIds: [keep] }]);
+    expect((await preset(t, 'knowledge')).options.map((o) => o.path)).toEqual(['几何']);
+  });
+
+  it('多个选项合并到同一目标：先整体校验；非法目标时整体回滚；子项随上级合并', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const target = await ensure('函数');
+    const x = await ensure('函数的性质');
+    const xChild = await ensure('函数的性质/单调性');
+    const y = await ensure('函数性质');
+    const a = await create(t, { properties: [{ propertyId: kp.id, optionIds: [xChild, y] }] });
+    // 目标在某个源的子树内：整体拒绝，什么都不改
+    const bad = await t.json('POST', '/api/property-options/merge-many', { ids: [y, x], intoId: xChild });
+    expect(bad.status).toBe(400);
+    expect((await preset(t, 'knowledge')).options).toHaveLength(4);
+    const res = await t.json('POST', '/api/property-options/merge-many', { ids: [x, xChild, y], intoId: target });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ merged: 2, affectedItems: 1 });
+    expect(version(t, a.id)).toBe(2);
+    const opts = (await preset(t, 'knowledge')).options.map((o) => o.path);
+    expect(opts).toEqual(['函数', '函数/单调性']);
+    const vals = (await t.json('GET', `/api/problems/${a.id}`)).body.properties[0].optionIds as string[];
+    expect(vals.sort()).toEqual([target, xChild].sort());
+  });
+
+  it('多个选项一起移动：保持相对顺序；随上级移动的后代不单独处理；只重建投影不递增版本', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const parent = await ensure('代数');
+    const a = await ensure('方程');
+    const aChild = await ensure('方程/一元二次');
+    const b = await ensure('不等式');
+    await ensure('代数/多项式');
+    const p = await create(t, { properties: [{ propertyId: kp.id, optionIds: [aChild] }] });
+    const res = await t.json('POST', '/api/property-options/move-many', { ids: [a, aChild, b], parentId: parent, index: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body.options.map((o: { path: string }) => o.path)).toEqual(['代数', '代数/方程', '代数/方程/一元二次', '代数/不等式', '代数/多项式']);
+    expect(version(t, p.id)).toBe(1);
+    const found = await t.json('GET', `/api/problems?q=${encodeURIComponent('代数/方程')}`);
+    expect(found.body.total).toBe(1);
   });
 });

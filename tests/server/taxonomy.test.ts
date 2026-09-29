@@ -123,3 +123,75 @@ describe('学科/学段字典管理', () => {
     expect((await t.json('POST', '/api/dict/grade/add', { value: 'x' })).status).toBe(404);
   });
 });
+
+describe('数据管理的多选批量操作', () => {
+  it('一次删除多个标签：父子同时选中按父级处理；被多个所选标签命中的对象只递增一次；全部不存在时 404', async () => {
+    t = await makeTestApp();
+    const a = await create(t, { tags: ['数学/函数', '易错', '待讲评'] });
+    const b = await create(t, { tags: ['数学/函数/单调性'] });
+    const c = await create(t, { tags: ['保留'] });
+    const res = await t.json('POST', '/api/tags/delete-many', { paths: ['数学/函数/单调性', '数学/函数', '易错', '待讲评', '不存在'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ deleted: 4, affectedItems: 2 });
+    expect(await tagsOf(t, a.id)).toEqual([]);
+    expect(await tagsOf(t, b.id)).toEqual([]);
+    expect(await tagsOf(t, c.id)).toEqual(['保留']);
+    // a 命中三个标签，只递增一次
+    expect(version(t, a.id)).toBe(2);
+    expect(version(t, b.id)).toBe(2);
+    expect(version(t, c.id)).toBe(1);
+    expect((await t.json('POST', '/api/tags/delete-many', { paths: ['不存在'] })).status).toBe(404);
+  });
+
+  it('多个标签合并到同一目标：各自子树落到目标之下；重名合并；对象只递增一次；不能合并到自己的下级', async () => {
+    t = await makeTestApp();
+    const a = await create(t, { tags: ['旧/甲', '另一个'] });
+    const b = await create(t, { tags: ['另一个/子'] });
+    const res = await t.json('POST', '/api/tags/merge', { from: ['旧/甲', '另一个'], to: '新' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ affectedItems: 2 });
+    expect(await tagsOf(t, a.id)).toEqual(['新']);
+    expect(await tagsOf(t, b.id)).toEqual(['新/子']);
+    expect(version(t, a.id)).toBe(2);
+    expect((await t.json('POST', '/api/tags/merge', { from: ['新'], to: '新/子/更深' })).status).toBe(400);
+  });
+
+  it('多个标签移到另一个标签下（拖动）：保留末级名称，子树跟随；移回顶层；不能移进自己的下级', async () => {
+    t = await makeTestApp();
+    const a = await create(t, { tags: ['换元', '配方/完全平方'] });
+    let r = await t.json('POST', '/api/tags/move', { paths: ['换元', '配方'], parent: '方法' });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ renamed: 2, affectedItems: 1 });
+    expect(await tagsOf(t, a.id)).toEqual(['方法/换元', '方法/配方/完全平方']);
+    expect(version(t, a.id)).toBe(2);
+    r = await t.json('POST', '/api/tags/move', { paths: ['方法/换元'], parent: null });
+    expect(await tagsOf(t, a.id)).toEqual(['换元', '方法/配方/完全平方']);
+    expect((await t.json('POST', '/api/tags/move', { paths: ['方法'], parent: '方法/配方' })).status).toBe(400);
+  });
+
+  it('学科多值合并与清除一次完成；移出候选时任何一个仍在使用就整体不做', async () => {
+    t = await makeTestApp();
+    const a = await create(t, { subject: '数学' });
+    const b = await create(t, { subject: '奥数' });
+    const m = await create(t, { subject: '数学' }, 'materials');
+    await t.json('POST', '/api/dict/subject/add', { value: '竞赛' });
+    let r = await t.json('POST', '/api/dict/subject/merge', { values: ['奥数', '竞赛'], into: '数学' });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ affectedItems: 1 });
+    expect((await t.json('GET', `/api/problems/${b.id}`)).body.subject).toBe('数学');
+    r = await t.json('POST', '/api/dict/subject/merge', { values: ['数学'], into: null });
+    expect(r.body).toEqual({ affectedItems: 3 });
+    expect((await t.json('GET', `/api/materials/${m.id}`)).body.subject).toBeNull();
+    expect(version(t, a.id)).toBe(2);
+    // 移出候选：物理仍在使用的值会整体失败
+    await create(t, { subject: '物理' });
+    const bad = await t.json('POST', '/api/dict/subject/remove-many', { values: ['化学', '物理'] });
+    expect(bad.status).toBe(409);
+    expect(bad.body.error.message).toContain('物理');
+    const dict = (await t.json('GET', '/api/dict/manage')).body.subject.map((e: { value: string }) => e.value);
+    expect(dict).toContain('化学');
+    const ok = await t.json('POST', '/api/dict/subject/remove-many', { values: ['化学', '生物'] });
+    expect(ok.status).toBe(200);
+    expect(ok.body.subject.map((e: { value: string }) => e.value)).not.toContain('化学');
+  });
+});

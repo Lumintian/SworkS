@@ -53,6 +53,7 @@ export interface NoteRow {
   title: string | null;
   body_md: string;
   position: number;
+  seq: number | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -82,6 +83,9 @@ export interface RawInputRow {
   material_id: string | null;
   block_id: string | null;
   captured_at: string;
+  original_mime: string | null;
+  original_size: number | null;
+  original_sha256: string | null;
 }
 
 export function toBlockDTO(r: BlockRow): BlockDTO {
@@ -105,6 +109,7 @@ export function toNoteDTO(r: NoteRow): NoteDTO {
     title: r.title,
     bodyMd: r.body_md,
     position: r.position,
+    seq: r.seq,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     deletedAt: r.deleted_at,
@@ -135,6 +140,10 @@ export function toRawInputDTO(r: RawInputRow): RawInputDTO {
     originalFilename: r.original_filename,
     blockId: r.block_id,
     capturedAt: r.captured_at,
+    original:
+      r.original_mime !== null && r.original_size !== null && r.original_sha256 !== null
+        ? { mime: r.original_mime, size: r.original_size, sha256: r.original_sha256 }
+        : null,
   };
 }
 

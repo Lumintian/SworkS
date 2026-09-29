@@ -40,7 +40,7 @@ describe('预置属性与取值', () => {
     t = await makeTestApp();
     const all = await defs(t);
     expect(all.map((d) => [d.name, d.type, d.preset, d.nested])).toEqual([
-      ['题型', 'select', 'qtype', false],
+      ['题型', 'select', 'qtype', true],
       ['难度', 'select', 'difficulty', false],
       ['考点', 'multiselect', 'knowledge', true],
     ]);

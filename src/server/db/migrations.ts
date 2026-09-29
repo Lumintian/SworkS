@@ -9,6 +9,7 @@ import { integrityCheck, nowIso, type DB } from './connection.js';
 import { SCHEMA_V1 } from './schema-v1.js';
 import { migrateV2 } from './schema-v2.js';
 import { SCHEMA_V3 } from './schema-v3.js';
+import { SCHEMA_V4 } from './schema-v4.js';
 
 export interface Migration {
   version: number;
@@ -36,6 +37,11 @@ export const MIGRATIONS: Migration[] = [
     version: 3,
     name: 'students',
     up: (db) => db.exec(SCHEMA_V3),
+  },
+  {
+    version: 4,
+    name: 'notes-seq-originals-saved-searches',
+    up: (db) => db.exec(SCHEMA_V4),
   },
 ];
 

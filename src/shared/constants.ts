@@ -8,6 +8,10 @@ export type BlockKind = (typeof BLOCK_KINDS)[number];
 
 export const NOTE_TYPES = ['note', 'answer', 'solution'] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
+/** 笔记按类型分栏显示与导出时的顺序：笔记 → 解析 → 答案 */
+export const NOTE_TAB_ORDER: readonly NoteType[] = ['note', 'solution', 'answer'];
+/** 笔记序号的取值范围 */
+export const NOTE_SEQ_MAX = 999;
 
 export const NOTE_TYPE_LABELS: Record<NoteType, string> = {
   note: '笔记',

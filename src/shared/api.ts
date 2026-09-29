@@ -5,6 +5,7 @@ import {
   BLOCK_KINDS,
   MATERIAL_STATUSES,
   type AttemptResult,
+  NOTE_SEQ_MAX,
   NOTE_TYPES,
   PROPERTY_TYPES,
   type PropertyPreset,
@@ -37,6 +38,8 @@ export const noteInputSchema = z
     type: z.enum(NOTE_TYPES),
     title: optionalText(300),
     bodyMd: z.string().max(2_000_000),
+    /** 可选序号（0–999）。省略表示保留原值（旧页面保存时不会抹掉），null 表示清除 */
+    seq: z.number().int().min(0).max(NOTE_SEQ_MAX).nullable().optional(),
   })
   .strict();
 export type NoteInput = z.infer<typeof noteInputSchema>;
@@ -345,6 +348,8 @@ export interface NoteDTO {
   title: string | null;
   bodyMd: string;
   position: number;
+  /** 可选序号（例如对应第几问）；显示顺序仍由 position 决定 */
+  seq: number | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -359,6 +364,8 @@ export interface RawInputDTO {
   originalFilename: string | null;
   blockId: string | null;
   capturedAt: string;
+  /** 收录时做了格式转换：原文件的格式、大小与哈希（原字节不保留） */
+  original: { mime: string; size: number; sha256: string } | null;
 }
 
 export interface SourceLinkDTO {

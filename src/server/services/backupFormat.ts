@@ -14,8 +14,10 @@ import { hashEntry, openZipChecked, readEntryBuffer, type OpenedZip } from './zi
 import { createHash } from 'node:crypto';
 
 export const BACKUP_FORMAT = 'sworks-backup';
+/** library_meta 中只描述本机派生数据的键，不写入备份（恢复后会重建）。 */
+export const RUNTIME_META_KEYS: ReadonlySet<string> = new Set(['search_index_version']);
 export const RECORDS_FORMAT = 'sworks-records';
-export const BACKUP_SCHEMA_VERSION = 3;
+export const BACKUP_SCHEMA_VERSION = 4;
 
 const str = z.string();
 const nstr = z.string().nullable();
@@ -207,8 +209,39 @@ export const RECORD_TABLES_V3 = {
     .strict(),
 } as const;
 
+/** v4：笔记序号、原始输入的原文件摘要、常用检索。 */
+export const RECORD_TABLES_V4 = {
+  ...RECORD_TABLES_V3,
+  notes: RECORD_TABLES_V1.notes.extend({ seq: int.min(0).max(999).nullable() }).strict(),
+  raw_inputs: RECORD_TABLES_V1.raw_inputs
+    .extend({
+      original_mime: z.string().min(3).max(100).nullable(),
+      original_size: int.min(0).nullable(),
+      original_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+    })
+    .strict()
+    .refine(
+      (r) => (r.original_mime === null) === (r.original_size === null) && (r.original_size === null) === (r.original_sha256 === null),
+      { message: '原文件摘要的三列必须同时为空或同时有值' },
+    ),
+  saved_searches: z
+    .object({
+      id: uuid,
+      scope: z.enum(['problem', 'material']),
+      name: str,
+      query_json: str,
+      sort: nstr,
+      position: int,
+      show_in_nav: bool01,
+      created_at: iso,
+      updated_at: iso,
+      deleted_at: niso,
+    })
+    .strict(),
+} as const;
+
 /** 当前版本写出的表。 */
-export const RECORD_TABLES = RECORD_TABLES_V3;
+export const RECORD_TABLES = RECORD_TABLES_V4;
 
 type TableSchemas = Record<string, z.ZodType>;
 
@@ -217,6 +250,7 @@ export const BACKUP_VERSIONS: Record<number, { dbSchemaVersion: number; tables: 
   1: { dbSchemaVersion: 1, tables: RECORD_TABLES_V1 },
   2: { dbSchemaVersion: 2, tables: RECORD_TABLES_V2 },
   3: { dbSchemaVersion: 3, tables: RECORD_TABLES_V3 },
+  4: { dbSchemaVersion: 4, tables: RECORD_TABLES_V4 },
 };
 
 export type RecordTable = keyof typeof RECORD_TABLES;
@@ -248,6 +282,7 @@ const ORDER_BY: Record<RecordTable, string> = {
   property_values: 'property_id, problem_id, material_id, option_id, text_value, number_value',
   students: 'created_at, id',
   student_attempts: 'attempted_at, id',
+  saved_searches: 'scope, position, id',
 };
 
 /**
@@ -268,8 +303,8 @@ export function exportRecords(db: DB): RecordsFile {
   for (const t of TABLE_ORDER) {
     (tables as Record<string, unknown[]>)[t] = db.prepare(`SELECT * FROM ${t} ORDER BY ${ORDER_BY[t]}`).all();
   }
-  // 运行状态信息不属于库内容
-  tables.library_meta = tables.library_meta.filter((r) => !r.key.startsWith('last_backup'));
+  // 运行状态信息与派生数据的版本不属于库内容
+  tables.library_meta = tables.library_meta.filter((r) => !r.key.startsWith('last_backup') && !RUNTIME_META_KEYS.has(r.key));
   return {
     format: RECORDS_FORMAT,
     backupSchemaVersion: BACKUP_SCHEMA_VERSION,

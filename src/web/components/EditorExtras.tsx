@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import { IMAGE_FORMAT_LABELS, type InputImageMime } from '@shared/constants';
 import { Link2, Unlink } from 'lucide-react';
 import type { ListResponse, RawInputDTO } from '@shared/api';
 import { assetUrl, errorMessage, getJSON } from '../lib/api';
 import type { DraftSource } from '../lib/draft';
-import { formatTime } from '../lib/format';
+import { formatBytes, formatTime } from '../lib/format';
 import { Link } from '../lib/router';
 import { Dialog, useToast } from './ui';
 
@@ -130,7 +131,7 @@ export function RawInputsPanel({ items }: { items: RawInputDTO[] }) {
   return (
     <details className="card-flat px-4 py-3 text-sm">
       <summary className="cursor-pointer font-semibold text-ink-soft">原始输入记录（{items.length}）</summary>
-      <p className="mt-2 text-xs text-ink-faint">这里保存最初收到的内容，编辑题干不会改变它们。</p>
+      <p className="mt-2 text-xs text-ink-faint">这里保存最初收到的内容，编辑题干不会改变它们。收录时转换过格式的图片（例如 HEIC → WebP）只保留原文件的格式、大小与哈希。</p>
       <ul className="mt-2 space-y-2">
         {items.map((r) => (
           <li key={r.id} className="border-t border-line pt-2">
@@ -138,12 +139,17 @@ export function RawInputsPanel({ items }: { items: RawInputDTO[] }) {
               <span className="chip chip-stone">{RAW_KIND[r.kind]}</span>
               <span>{formatTime(r.capturedAt)}</span>
               {r.originalFilename ? <span>{r.originalFilename}</span> : null}
+              {r.original ? (
+                <span className="chip chip-clay" title={`原文件 SHA-256：${r.original.sha256}`}>
+                  原文件 {IMAGE_FORMAT_LABELS[r.original.mime as InputImageMime] ?? r.original.mime} {formatBytes(r.original.size)}，已转换保存
+                </span>
+              ) : null}
             </div>
             {r.url ? <p className="mt-1 break-all font-mono text-xs">{r.url}</p> : null}
             {r.kind === 'text' && r.text ? <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-sunken p-2 text-xs">{r.text}</pre> : null}
             {r.assetId ? (
               <a className="link-btn text-xs" href={assetUrl(r.assetId)} target="_blank" rel="noopener noreferrer">
-                查看原文件
+                {r.original ? '查看保存的图片' : '查看原文件'}
               </a>
             ) : null}
           </li>

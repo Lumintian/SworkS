@@ -6,6 +6,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, placeholder as placeholderExt } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
+import { imageMimeOfFile } from '@shared/constants';
 
 const earthHighlight = HighlightStyle.define([
   { tag: tags.heading, color: '#5c4033', fontWeight: '700' },
@@ -32,10 +33,9 @@ export interface CodeEditorProps {
   onImageFiles?: (files: File[]) => Promise<string>;
 }
 
-const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-
+/** 看起来是图片的文件（HEIC 等常没有 MIME，按扩展名判断）；具体格式由服务端按文件头识别 */
 function imageFiles(list: FileList | null | undefined): File[] {
-  return Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
+  return Array.from(list ?? []).filter((f) => f.type.startsWith('image/') || imageMimeOfFile(f) !== null);
 }
 
 export function CodeEditor({ value, onChange, placeholder, ariaLabel, autoFocus, minHeight = '8rem', onImageFiles }: CodeEditorProps) {
@@ -50,7 +50,7 @@ export function CodeEditor({ value, onChange, placeholder, ariaLabel, autoFocus,
     const insertImages = (v: EditorView, files: File[], pos?: number) => {
       const handler = onImagesRef.current;
       if (!handler) return false;
-      const supported = files.filter((f) => IMAGE_TYPES.has(f.type));
+      const supported = files.filter((f) => imageMimeOfFile(f) !== null);
       if (supported.length === 0 && files.length > 0) {
         // 交给调用方提示不支持的格式
         void handler(files).catch(() => undefined);

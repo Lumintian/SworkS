@@ -7,7 +7,20 @@ import { ArrowDown, ArrowUp, ClipboardPaste, FileText, ImagePlus, Link2, PencilL
 import type { AssetDTO, RemoteImageDTO } from '@shared/api';
 import { assetUrl, errorMessage } from '../lib/api';
 import { newBlock, type DraftBlock, type Refs } from '../lib/draft';
-import { addRemoteImage, extFor, IMAGE_ACCEPT, importTextFile, isSingleUrl, manualRemoteImage, recordPastedText, retryRemoteImage, uploadImageFile } from '../lib/ingest';
+import {
+  addRemoteImage,
+  conversionMessage,
+  extFor,
+  IMAGE_ACCEPT,
+  imageMimeOfFile,
+  importTextFile,
+  isSingleUrl,
+  isTextImportFile,
+  manualRemoteImage,
+  recordPastedText,
+  retryRemoteImage,
+  uploadImageFile,
+} from '../lib/ingest';
 import { formatBytes } from '../lib/format';
 import { isEditableTarget } from '../lib/hotkeys';
 import { MarkdownAssetsContext } from '../markdown/MarkdownView';
@@ -35,6 +48,8 @@ export function useMarkdownImageUpload(io: ContentIO) {
           io.addRefs({ assets: { [r.asset.id]: r.asset } });
           io.addRawInput(r.rawInputId);
           snippets.push(`![](assets/${r.asset.id}.${extFor(r.asset.mime)})`);
+          const note = conversionMessage(r);
+          if (note) toast(note, 'info');
         } catch (err) {
           toast(`图片未保存：${errorMessage(err)}`, 'error');
         }
@@ -205,12 +220,14 @@ export function BlocksEditor({
     async (files: File[]) => {
       for (const f of files) {
         const blockId = crypto.randomUUID();
-        setBusy('正在保存图片…');
+        setBusy(imageMimeOfFile(f) === 'image/heic' || imageMimeOfFile(f) === 'image/heif' ? '正在转换 HEIC 图片…' : '正在保存图片…');
         try {
           const r = await uploadImageFile(f, blockId);
           io.addRefs({ assets: { [r.asset.id]: r.asset } });
           io.addRawInput(r.rawInputId);
           append(newBlock('image', { id: blockId, assetId: r.asset.id }), false);
+          const note = conversionMessage(r);
+          if (note) toast(note, 'info');
         } catch (err) {
           toast(`图片未保存：${errorMessage(err)}`, 'error');
         } finally {
@@ -262,6 +279,23 @@ export function BlocksEditor({
         toast(`原始文本未能记录：${errorMessage(err)}`, 'warn');
       }
       append(newBlock('text', { id: blockId, body: text }), false);
+    },
+    [append, io, toast],
+  );
+
+  const importText = useCallback(
+    async (f: File) => {
+      const blockId = crypto.randomUUID();
+      try {
+        const r = await importTextFile(f, blockId);
+        io.addRawInput(r.rawInputId);
+        append(newBlock(r.kind, { id: blockId, body: r.text }), false);
+        if (r.missingLocalImages.length) {
+          toast(`导入完成，但有 ${r.missingLocalImages.length} 张本地图片无法读取，请在块中手动补传：${r.missingLocalImages.join('、')}`, 'warn');
+        } else toast(`已导入 ${f.name}`, 'success');
+      } catch (err) {
+        toast(`导入失败：${errorMessage(err)}`, 'error');
+      }
     },
     [append, io, toast],
   );
@@ -410,7 +444,10 @@ export function BlocksEditor({
             const files = Array.from(e.dataTransfer.files);
             if (files.length) {
               e.preventDefault();
-              void addImages(files);
+              // .md/.txt 按文本导入，其余交给图片收录（服务端按文件头识别格式，HEIC 等常没有 MIME）
+              for (const f of files.filter(isTextImportFile)) void importText(f);
+              const images = files.filter((f) => !isTextImportFile(f));
+              if (images.length) void addImages(images);
             }
           }}
         >
@@ -458,21 +495,10 @@ export function BlocksEditor({
               className="sr-only"
               tabIndex={-1}
               aria-hidden="true"
-              onChange={async (e) => {
+              onChange={(e) => {
                 const f = e.target.files?.[0];
                 e.target.value = '';
-                if (!f) return;
-                const blockId = crypto.randomUUID();
-                try {
-                  const r = await importTextFile(f, blockId);
-                  io.addRawInput(r.rawInputId);
-                  append(newBlock(r.kind, { id: blockId, body: r.text }), false);
-                  if (r.missingLocalImages.length) {
-                    toast(`导入完成，但有 ${r.missingLocalImages.length} 张本地图片无法读取，请在块中手动补传：${r.missingLocalImages.join('、')}`, 'warn');
-                  } else toast(`已导入 ${f.name}`, 'success');
-                } catch (err) {
-                  toast(`导入失败：${errorMessage(err)}`, 'error');
-                }
+                if (f) void importText(f);
               }}
             />
           </div>

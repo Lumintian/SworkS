@@ -22,6 +22,8 @@ export function openDatabase(file: string, opts: OpenOptions = {}): DB {
   try {
     db.pragma('foreign_keys = ON');
     db.pragma('busy_timeout = 5000');
+    // 临时表（变更记录）只放内存
+    db.pragma('temp_store = MEMORY');
     if (!opts.readonly) {
       db.pragma('journal_mode = WAL');
       db.pragma('synchronous = FULL');

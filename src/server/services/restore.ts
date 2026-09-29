@@ -14,7 +14,7 @@ import { dirIsEmptyOrMissing, fsyncDir } from '../fsutil.js';
 import { dataPaths, LOCK_FILE } from '../paths.js';
 import { sha256File } from './assetStore.js';
 import { tableOrderFor, validateBackup, type Manifest, type Records } from './backupFormat.js';
-import { reindexAll } from './search.js';
+import { markSearchIndexCurrent, reindexAll } from './search.js';
 
 export interface RestoreResult {
   dataDir: string;
@@ -87,6 +87,8 @@ export async function restoreBackup(
         const n = (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
         if (n !== manifest.counts[t]) throw new AppError('BACKUP_INVALID', `恢复后 ${t} 数量不一致`);
       }
+      // 检索投影刚按当前规则重建：记下版本（运行时标记，不在备份里，所以放在数量核对之后）
+      markSearchIndexCurrent(db);
       for (const a of records.tables.assets) {
         const file = path.join(stagePaths.assets, a.rel_path);
         if ((await sha256File(file)) !== a.sha256) throw new AppError('BACKUP_INVALID', `恢复后附件哈希不一致：${a.id}`);

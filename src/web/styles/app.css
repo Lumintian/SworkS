@@ -320,6 +320,11 @@
     color: var(--color-stone);
     box-shadow: var(--shadow-soft);
   }
+  /* 逐级选择时，已选项的上级：标出所在路径，但不算选中 */
+  .segmented > button[data-ancestor] {
+    background: var(--color-surface);
+    color: var(--color-sage-deep);
+  }
 
   .paste-zone {
     border: 1.5px dashed var(--color-line-strong);

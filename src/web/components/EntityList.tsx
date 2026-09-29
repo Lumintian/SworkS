@@ -1,12 +1,14 @@
 /**
  * 题目/资料列表（参照 Notebook Navigator 的列表区）：
- * 关键词 + 导航树筛选（标签子树、学科、学段），按时间分组，多选（勾选、Shift 连选、⌘/Ctrl+A、选择全部 N 项），
+ * 查询语言输入框（条件都写在框里，导航点击也是改写它）+ 条件面板，按时间或相关度排序，
+ * 多选（勾选、Shift 连选、⌘/Ctrl+A、选择全部 N 项），
  * 批量操作、右键菜单、快速预览（空格）与键盘导航；返回列表时恢复滚动位置与焦点。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Download, ExternalLink, Eye, Search, SquareCheck, Trash2, UserRound, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Download, ExternalLink, Eye, Search, SquareCheck, Trash2, UserRound, X } from 'lucide-react';
 import type { ListItemDTO } from '@shared/api';
-import { hasActiveFilters, NONE_VALUE, TRUE_VALUE, type ListFilters } from '@shared/listFilters';
+import { hasActiveFilters } from '@shared/listFilters';
+import { navSelection, rowsOf, setFieldCondition, STUDENT_STATE_LABEL } from '@shared/query';
 import { ATTEMPT_FILTER_LABELS, ATTEMPT_FILTERS, MATERIAL_STATUS_LABELS, type MaterialStatus } from '@shared/constants';
 import { errorMessage } from '../lib/api';
 import { exportProblems } from '../lib/exportMarkdown';
@@ -14,75 +16,16 @@ import { dateGroupLabel } from '../lib/format';
 import { hasOpenOverlay, isEditableTarget, MOD_LABEL, useKeydown } from '../lib/hotkeys';
 import { fetchAllIds, listParams, useInfiniteList, useListFilters, useStudents, type Collection } from '../lib/queries';
 import { useRouter } from '../lib/router';
-import { propertiesFor, useCatalog } from '../lib/useCatalog';
+import { hasLegacyFilters, migrateLegacyFilters, tagCondition, useQueryContext } from '../lib/queryText';
+import { propertiesFor } from '../lib/useCatalog';
 import { useSelection } from '../lib/useSelection';
 import { BatchBar, useBatchRunner } from './list/BatchBar';
 import { ListRow } from './list/ListRow';
-import { TagLabel } from './TagLabel';
+import { ConditionPanel } from './search/ConditionPanel';
+import { QueryInput, type QueryInputHandle } from './search/QueryInput';
 import { QuickLook } from './list/QuickLook';
 import { ContextItem, ContextSeparator, DropdownContent, DropdownItem, DropdownMenu, DropdownSeparator, DropdownTrigger } from './Menu';
 import { EmptyState, ErrorBox, Spinner, useConfirm, useToast } from './ui';
-
-function FilterChip({ label, onRemove }: { label: ReactNode; onRemove: () => void }) {
-  return (
-    <span className="chip chip-stone gap-1 py-0.5 pl-2.5 pr-1">
-      {label}
-      <button type="button" className="rounded-full p-0.5 opacity-70 hover:bg-white/60 hover:opacity-100" aria-label="移除这个筛选条件" onClick={onRemove}>
-        <X size={12} />
-      </button>
-    </span>
-  );
-}
-
-function FilterChips({ filters, setFilters, onClearAll }: { filters: ListFilters; setFilters: (f: ListFilters) => void; onClearAll: () => void }) {
-  const catalog = useCatalog();
-  if (!hasActiveFilters(filters)) return null;
-  const valueLabel = (kind: string, v: string) => (v === NONE_VALUE ? `${kind}：未设置` : `${kind}：${v}`);
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 text-sm" aria-label="当前筛选条件">
-      {filters.q ? <FilterChip label={`关键词：${filters.q}`} onRemove={() => setFilters({ ...filters, q: '' })} /> : null}
-      {filters.tagPaths.map((p) => (
-        <FilterChip
-          key={p}
-          label={
-            <>
-              #<TagLabel name={p} />
-            </>
-          }
-          onRemove={() => setFilters({ ...filters, tagPaths: filters.tagPaths.filter((x) => x !== p) })}
-        />
-      ))}
-      {filters.tagIds.map((id) => (
-        <FilterChip
-          key={id}
-          label={`#${catalog.tags.find((t) => t.id === id)?.name ?? '标签'}`}
-          onRemove={() => setFilters({ ...filters, tagIds: filters.tagIds.filter((x) => x !== id) })}
-        />
-      ))}
-      {filters.untagged ? <FilterChip label="无标签" onRemove={() => setFilters({ ...filters, untagged: false })} /> : null}
-      {filters.attempt ? <FilterChip label={`作答：${ATTEMPT_FILTER_LABELS[filters.attempt]}`} onRemove={() => setFilters({ ...filters, attempt: '' })} /> : null}
-      {filters.props.map((pf) => {
-        const def = catalog.properties.find((d) => d.id === pf.propertyId);
-        const labels = pf.values.map((v) =>
-          v === NONE_VALUE ? '未设置' : v === TRUE_VALUE ? '是' : (def?.options.find((o) => o.id === v)?.path ?? '已删除的选项'),
-        );
-        return (
-          <FilterChip
-            key={pf.propertyId}
-            label={`${def?.name ?? '属性'}：${labels.join(' 或 ')}`}
-            onRemove={() => setFilters({ ...filters, props: filters.props.filter((x) => x.propertyId !== pf.propertyId) })}
-          />
-        );
-      })}
-      {filters.subject ? <FilterChip label={valueLabel('学科', filters.subject)} onRemove={() => setFilters({ ...filters, subject: '' })} /> : null}
-      {filters.stage ? <FilterChip label={valueLabel('学段', filters.stage)} onRemove={() => setFilters({ ...filters, stage: '' })} /> : null}
-      {filters.tagPaths.length + filters.tagIds.length > 1 ? <span className="text-xs text-ink-faint">同时包含全部所选标签</span> : null}
-      <button type="button" className="btn btn-ghost btn-sm ml-auto" onClick={onClearAll}>
-        <X size={14} /> 清除筛选
-      </button>
-    </div>
-  );
-}
 
 function scrollKey(path: string, search: string) {
   return `sworks.list.${path}${search}`;
@@ -109,14 +52,28 @@ export function EntityList({
   const filters = useMemo(() => ({ ...urlFilters, status }), [urlFilters, status]);
   const filterKey = listParams(filters);
   const query = useInfiniteList(collection, filters);
-  const [qInput, setQInput] = useState(filters.q);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const catalog = useCatalog();
+  const searchRef = useRef<QueryInputHandle>(null);
+  const qctx = useQueryContext();
+  const { catalog } = qctx;
+  const scope = collection === 'problems' ? 'problem' : 'material';
   const defsMap = useMemo(() => new Map(catalog.properties.map((d) => [d.id, d])), [catalog.properties]);
-  // 可以按选项顺序排序的属性：不分层的单选（例如难度、题型）
-  const sortDefs = propertiesFor(catalog, collection).filter((d) => d.type === 'select' && !d.nested);
+  // 可以按选项顺序排序的属性：单选（例如难度、题型；分层时按选项树顺序）
+  const sortDefs = propertiesFor(catalog, collection).filter((d) => d.type === 'select');
   const students = useStudents();
-  const student = urlFilters.student ? students.data?.find((s) => s.id === urlFilters.student) : undefined;
+  const firstPage = query.data?.pages[0];
+  const sortApplied = firstPage?.sortApplied ?? (urlFilters.sort === 'auto' ? 'created' : urlFilters.sort);
+  const diagnostics = firstPage?.diagnostics ?? [];
+  // “按学生查看”的上下文：地址栏的 student 参数，或查询里第一个正向的学生条件
+  const studentId = urlFilters.student || firstPage?.studentId || '';
+  const student = studentId ? qctx.students.find((s) => s.id === studentId) : undefined;
+  const rows = useMemo(() => (qctx.ready ? rowsOf(urlFilters.q, qctx.qc, scope) : []), [urlFilters.q, qctx.ready, qctx.qc, scope]);
+  const attemptState = navSelection(rows).student;
+
+  // 旧书签里的筛选参数（tag=、subject=、prop=…）在目录加载后转成查询文本
+  useEffect(() => {
+    if (qctx.ready && hasLegacyFilters(urlFilters)) setFilters(migrateLegacyFilters(urlFilters, qctx));
+  }, [qctx, urlFilters, setFilters]);
+  const setQ = useCallback((q: string) => setFilters({ ...urlFilters, q }), [setFilters, urlFilters]);
 
   const items = useMemo(() => {
     const seen = new Set<string>();
@@ -139,14 +96,6 @@ export function EntityList({
   useEffect(() => {
     if (quickId) setFocusedId(quickId);
   }, [quickId]);
-
-  // 关键词输入防抖；地址栏变化（例如点导航树、浏览器后退）时同步输入框
-  useEffect(() => setQInput(urlFilters.q), [urlFilters.q]);
-  useEffect(() => {
-    if (qInput.trim() === urlFilters.q) return;
-    const t = window.setTimeout(() => setFilters({ ...urlFilters, q: qInput.trim() }), 300);
-    return () => window.clearTimeout(t);
-  }, [qInput, urlFilters, setFilters]);
 
   // 返回列表时恢复滚动位置与焦点
   const restored = useRef(false);
@@ -240,8 +189,8 @@ export function EntityList({
   selectedRef.current = selection.selected;
   const dragIdsFor = useCallback((id: string) => () => (selectedRef.current.has(id) ? [...selectedRef.current] : [id]), []);
   const onTagClick = useCallback(
-    (name: string) => setFilters({ ...urlFilters, tagPaths: [name], tagIds: [], untagged: false }),
-    [setFilters, urlFilters],
+    (name: string) => setQ(setFieldCondition(urlFilters.q, qctx.qc, scope, { reserved: 'tag' }, tagCondition(name))),
+    [setQ, urlFilters.q, qctx.qc, scope],
   );
 
   const renderMenu = useCallback(
@@ -317,95 +266,118 @@ export function EntityList({
 
   const hasFilters = hasActiveFilters(filters);
   const allLoadedSelected = ids.length > 0 && ids.every((id) => selection.has(id));
-  const sortField = filters.sort === 'updated' ? 'updatedAt' : 'createdAt';
-  // 按属性排序时不按时间分组
-  const groupByDate = filters.sort === 'created' || filters.sort === 'updated';
+  const sortField = sortApplied === 'updated' ? 'updatedAt' : 'createdAt';
+  // 按属性或相关度排序时不按时间分组
+  const groupByDate = sortApplied === 'created' || sortApplied === 'updated';
+  const hasFreeText = sortApplied === 'relevance' || rows.some((r) => r.kind === 'text' && !r.negated);
+  const setAttempt = (state: (typeof ATTEMPT_FILTERS)[number] | '') => {
+    if (!student) return;
+    const label = qctx.students.filter((x) => x.name === student.name).length > 1 ? `${student.name}#${student.id.slice(0, 4)}` : student.name;
+    const cond = state ? `学生:${state === 'done' ? label : `${label}/${STUDENT_STATE_LABEL[state]}`}` : null;
+    setFilters({ ...urlFilters, student: student.id, q: setFieldCondition(urlFilters.q, qctx.qc, scope, { reserved: 'student' }, cond) });
+  };
   const quickIndex = quickId ? ids.indexOf(quickId) : -1;
 
   return (
     <div className="space-y-4">
       <div className="card-flat space-y-3 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <label className="relative min-w-[14rem] flex-1">
-            <span className="sr-only">搜索</span>
-            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
-            <input
+          <div className="query-box relative flex min-w-[14rem] flex-1 items-center">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-ink-faint" />
+            <QueryInput
               ref={searchRef}
-              className="input pl-9"
-              type="search"
-              value={qInput}
-              placeholder={collection === 'problems' ? '搜索标题、题干、笔记、答案、解析、标签…（空格分隔表示同时包含）' : '搜索资料标题、内容、图片说明、标签…'}
-              onChange={(e) => setQInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
-                if (e.key === 'ArrowDown') {
-                  (e.target as HTMLInputElement).blur();
-                  if (ids[0]) setFocusedId(ids[0]);
-                }
+              value={urlFilters.q}
+              onChange={(q) => {
+                if (q !== urlFilters.q) setQ(q);
               }}
-              data-testid="search-input"
+              ctx={qctx}
+              scope={scope}
+              placeholder={collection === 'problems' ? '搜索：函数 最值  #方法/换元  题型:完型填空  -有:答案 …' : '搜索资料：标题、内容、图片说明、标签，也可写 状态:待整理 等条件'}
+              onArrowDown={() => {
+                if (ids[0]) setFocusedId(ids[0]);
+              }}
             />
-          </label>
+          </div>
+          <ConditionPanel text={urlFilters.q} onChange={setQ} ctx={qctx} scope={scope} onEditInText={(from, to) => searchRef.current?.select(from, to)} />
+          {hasFilters ? (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setFilters({ ...urlFilters, q: '', attempt: '' })}>
+              <X size={14} /> 清除筛选
+            </button>
+          ) : null}
+        </div>
+        {diagnostics.length ? (
+          <ul className="space-y-0.5 text-xs" aria-label="查询提示" data-testid="query-diagnostics">
+            {diagnostics.slice(0, 4).map((d, i) => (
+              <li key={i} className={`flex items-start gap-1.5 ${d.severity === 'error' ? 'text-terracotta' : 'text-ochre'}`}>
+                <AlertTriangle size={13} className="mt-0.5 flex-none" />
+                <span>
+                  <code className="rounded bg-sunken px-1">{urlFilters.q.slice(d.from, d.to) || '…'}</code> {d.message}
+                  {d.suggestions?.length ? `（例如：${d.suggestions.slice(0, 4).join('、')}）` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
           <div className="segmented" role="group" aria-label="排序">
-            <button type="button" aria-pressed={filters.sort === 'created'} onClick={() => setFilters({ ...urlFilters, sort: 'created' })}>
+            {hasFreeText ? (
+              <button type="button" aria-pressed={sortApplied === 'relevance'} onClick={() => setFilters({ ...urlFilters, sort: 'relevance' })}>
+                相关度
+              </button>
+            ) : null}
+            <button type="button" aria-pressed={sortApplied === 'created'} onClick={() => setFilters({ ...urlFilters, sort: 'created' })}>
               最近添加
             </button>
-            <button type="button" aria-pressed={filters.sort === 'updated'} onClick={() => setFilters({ ...urlFilters, sort: 'updated' })}>
+            <button type="button" aria-pressed={sortApplied === 'updated'} onClick={() => setFilters({ ...urlFilters, sort: 'updated' })}>
               最近修改
             </button>
             {sortDefs.map((d) => (
-              <button key={d.id} type="button" aria-pressed={filters.sort === `prop:${d.id}`} onClick={() => setFilters({ ...urlFilters, sort: `prop:${d.id}` })}>
+              <button key={d.id} type="button" aria-pressed={sortApplied === `prop:${d.id}`} onClick={() => setFilters({ ...urlFilters, sort: `prop:${d.id}` })}>
                 按{d.name}
               </button>
             ))}
           </div>
-        </div>
-        {collection === 'problems' ? (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <DropdownMenu>
-              <DropdownTrigger asChild>
-                <button type="button" className={`btn btn-sm ${urlFilters.student ? 'btn-sage' : 'btn-ghost'}`}>
-                  <UserRound size={14} /> {student ? `按“${student.name}”的作答查看` : urlFilters.student ? '按学生查看（已归档）' : '按学生查看'}
-                  <ChevronDown size={13} />
-                </button>
-              </DropdownTrigger>
-              <DropdownContent>
-                {students.data?.map((s) => (
-                  <DropdownItem key={s.id} checked={s.id === urlFilters.student} onSelect={() => setFilters({ ...urlFilters, student: s.id })}>
-                    {s.name}
-                  </DropdownItem>
-                ))}
-                {students.data?.length ? null : <DropdownItem disabled onSelect={() => undefined}>还没有学生</DropdownItem>}
-                {urlFilters.student ? (
-                  <>
-                    <DropdownSeparator />
-                    <DropdownItem onSelect={() => setFilters({ ...urlFilters, student: '', attempt: '' })}>不按学生查看</DropdownItem>
-                  </>
-                ) : null}
-              </DropdownContent>
-            </DropdownMenu>
-            {urlFilters.student ? (
-              <div className="segmented" role="group" aria-label="作答状态">
-                <button type="button" aria-pressed={!urlFilters.attempt} onClick={() => setFilters({ ...urlFilters, attempt: '' })}>
-                  全部
-                </button>
-                {ATTEMPT_FILTERS.map((f) => (
-                  <button key={f} type="button" aria-pressed={urlFilters.attempt === f} onClick={() => setFilters({ ...urlFilters, attempt: f })}>
-                    {ATTEMPT_FILTER_LABELS[f]}
+          {collection === 'problems' ? (
+            <>
+              <DropdownMenu>
+                <DropdownTrigger asChild>
+                  <button type="button" className={`btn btn-sm ${studentId ? 'btn-sage' : 'btn-ghost'}`}>
+                    <UserRound size={14} /> {student ? `按“${student.name}”的作答查看` : studentId ? '按学生查看（已归档）' : '按学生查看'}
+                    <ChevronDown size={13} />
                   </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <FilterChips
-          filters={urlFilters}
-          setFilters={setFilters}
-          onClearAll={() => {
-            setQInput('');
-            setFilters({ ...urlFilters, q: '', subject: '', stage: '', tagPaths: [], tagIds: [], untagged: false, props: [], attempt: '' });
-          }}
-        />
+                </DropdownTrigger>
+                <DropdownContent>
+                  {students.data?.map((s) => (
+                    <DropdownItem key={s.id} checked={s.id === studentId} onSelect={() => setFilters({ ...urlFilters, student: s.id })}>
+                      {s.name}
+                    </DropdownItem>
+                  ))}
+                  {students.data?.length ? null : <DropdownItem disabled onSelect={() => undefined}>还没有学生</DropdownItem>}
+                  {studentId ? (
+                    <>
+                      <DropdownSeparator />
+                      <DropdownItem onSelect={() => setFilters({ ...urlFilters, student: '', q: setFieldCondition(urlFilters.q, qctx.qc, scope, { reserved: 'student' }, null) })}>
+                        不按学生查看
+                      </DropdownItem>
+                    </>
+                  ) : null}
+                </DropdownContent>
+              </DropdownMenu>
+              {student ? (
+                <div className="segmented" role="group" aria-label="作答状态">
+                  <button type="button" aria-pressed={!attemptState} onClick={() => setAttempt('')}>
+                    全部
+                  </button>
+                  {ATTEMPT_FILTERS.map((f) => (
+                    <button key={f} type="button" aria-pressed={attemptState?.id === student.id && attemptState.state === f} onClick={() => setAttempt(f)}>
+                      {ATTEMPT_FILTER_LABELS[f]}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
 
       {selection.selected.size > 0 ? (
@@ -422,7 +394,9 @@ export function EntityList({
       {query.isPending ? <Spinner /> : null}
       {query.isError ? <ErrorBox message={errorMessage(query.error)} onRetry={() => void query.refetch()} /> : null}
       {query.isSuccess && items.length === 0 ? (
-        <EmptyState title={hasFilters ? '没有符合条件的内容' : emptyTitle}>{hasFilters ? '试试减少关键词或筛选条件。' : emptyHint}</EmptyState>
+        <EmptyState title={hasFilters ? '没有符合条件的内容' : emptyTitle}>
+          {hasFilters ? (diagnostics.some((d) => d.severity === 'error') ? '查询里有无法识别的条件，见上方提示。' : '试试减少关键词或筛选条件。') : emptyHint}
+        </EmptyState>
       ) : null}
       {items.length > 0 ? (
         <>
@@ -489,6 +463,7 @@ export function EntityList({
         }}
         onPrev={quickIndex > 0 ? () => setQuickId(ids[quickIndex - 1]!) : undefined}
         onNext={quickIndex >= 0 && quickIndex < ids.length - 1 ? () => setQuickId(ids[quickIndex + 1]!) : undefined}
+        hits={quickId ? items.find((i) => i.id === quickId)?.hits : undefined}
       />
     </div>
   );

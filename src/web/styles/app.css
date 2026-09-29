@@ -868,3 +868,94 @@
     color: var(--color-ink-soft);
   }
 }
+
+/* ---------------------------------------------------------------- 查询输入框与命中高亮 */
+mark.hit {
+  background: var(--color-ochre-soft);
+  color: var(--color-ink);
+  border-radius: 3px;
+  padding: 0 1px;
+  box-shadow: inset 0 -1px 0 rgb(154 107 34 / 0.35);
+}
+.query-input .cm-editor {
+  font-size: 0.92rem;
+}
+.query-input .cm-editor .cm-scroller {
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  overflow-x: auto;
+}
+.query-input .cm-editor .cm-content {
+  padding: 0.42rem 0;
+}
+.query-input .cm-editor .cm-line {
+  padding: 0 0.8rem 0 2.25rem;
+}
+.query-input .cm-q-chip {
+  background: var(--color-stone-soft);
+  border-radius: 6px;
+  padding: 1px 2px;
+}
+.query-input .cm-q-key {
+  color: var(--color-sage-deep);
+  font-weight: 600;
+}
+.query-input .cm-q-op {
+  color: var(--color-clay-deep);
+  font-weight: 700;
+}
+.query-input .cm-q-neg {
+  color: var(--color-terracotta);
+  font-weight: 700;
+}
+.query-input .cm-q-paren {
+  color: var(--color-ink-faint);
+}
+.query-input .cm-q-phrase {
+  color: var(--color-stone);
+  background: var(--color-clay-soft);
+  border-radius: 4px;
+}
+.query-input .cm-q-remove {
+  margin: 0 3px 0 1px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-size: 0.8rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.query-input .cm-q-remove::before {
+  content: '×';
+}
+.query-input .cm-q-remove:hover {
+  background: var(--color-line);
+  color: var(--color-ink);
+}
+.query-input .cm-lintRange-error {
+  background-image: none;
+  text-decoration: underline wavy var(--color-terracotta);
+}
+.query-input .cm-lintRange-warning {
+  background-image: none;
+  text-decoration: underline wavy var(--color-ochre);
+}
+.cm-tooltip.cm-tooltip-autocomplete,
+.cm-tooltip-lint {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lift);
+  font-family: var(--font-sans);
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--color-sage-soft);
+  color: var(--color-ink);
+}
+.cm-tooltip-autocomplete .cm-completionDetail {
+  color: var(--color-ink-faint);
+  font-style: normal;
+  margin-left: 0.6em;
+}

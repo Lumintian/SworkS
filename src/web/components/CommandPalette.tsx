@@ -1,13 +1,13 @@
 /**
- * 命令面板（⌘K / Ctrl+K）：按关键词跳到题目或资料、新建、跳到标签或页面。
+ * 命令面板（⌘K / Ctrl+K）：按关键词（与搜索框相同的查询语言）跳到题目或资料、新建、跳到标签或页面。
  * 在现有的原生 Dialog 里渲染 cmdk 的 <Command>，全站只有一套对话框。
  */
 import { Command } from 'cmdk';
 import { BookOpen, FilePlus2, Hash, Inbox, Library, Plus, Search, SlidersHorizontal, Tags, Trash2, Archive, FileText, UserRound, Users } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ListResponse } from '@shared/api';
-import { listFiltersToParams, EMPTY_FILTERS } from '@shared/listFilters';
 import { getJSON } from '../lib/api';
+import { propCondition, tagCondition } from '../lib/queryText';
 import { newId } from '../lib/format';
 import { useRouter } from '../lib/router';
 import { useStudents } from '../lib/queries';
@@ -102,7 +102,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           label: t.name,
           hint: `${t.problemCount} 道题`,
           icon: <Hash size={15} />,
-          run: () => go(`/problems?${listFiltersToParams({ ...EMPTY_FILTERS, tagPaths: [t.name] }).toString()}`),
+          run: () => go(`/problems?${new URLSearchParams({ q: tagCondition(t.name) }).toString()}`),
         })),
       // 属性选项（例如考点树）：跳到按该选项筛选的题目列表
       ...catalog.properties
@@ -115,7 +115,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             hint: d.name,
             icon: <Tags size={15} />,
             keywords: d.name,
-            run: () => go(`/problems?${listFiltersToParams({ ...EMPTY_FILTERS, props: [{ propertyId: d.id, values: [o.id] }] }).toString()}`),
+            run: () => go(`/problems?${new URLSearchParams({ q: propCondition(d, [o.id]) }).toString()}`),
           })),
         ),
     ],

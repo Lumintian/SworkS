@@ -28,7 +28,60 @@ function HitBadges({ item }: { item: ListItemDTO }) {
   );
 }
 
-/** 列表行里的属性：选项类显示为小标签（层级选项只显示最后一级），其他类型显示“名称：值”。 */
+/** 命中片段：<mark class="hit"> 标出命中的文字（区间由服务端按原文计算） */
+function Snippets({ item }: { item: ListItemDTO }) {
+  if (!item.snippets?.length) return null;
+  return (
+    <ul className="space-y-0.5 text-sm text-ink-soft" data-testid="snippets">
+      {item.snippets.map((sn, i) => {
+        const parts: ReactNode[] = [];
+        let at = 0;
+        sn.ranges.forEach(([a, b], k) => {
+          if (a > at) parts.push(sn.text.slice(at, a));
+          parts.push(
+            <mark key={k} className="hit">
+              {sn.text.slice(a, b)}
+            </mark>,
+          );
+          at = b;
+        });
+        if (at < sn.text.length) parts.push(sn.text.slice(at));
+        return (
+          <li key={i} className="line-clamp-2">
+            <span className="mr-1.5 text-xs text-ink-faint">{SEARCH_FIELD_LABELS[sn.field]}</span>
+            {parts}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** 各属性里在不同上级下重名的末级名称（小写）；按属性对象缓存，目录刷新后自然失效。 */
+const ambiguousCache = new WeakMap<PropertyDefDTO, ReadonlySet<string>>();
+function ambiguousLabels(def: PropertyDefDTO): ReadonlySet<string> {
+  let set = ambiguousCache.get(def);
+  if (!set) {
+    const seen = new Set<string>();
+    const dup = new Set<string>();
+    for (const o of def.options) {
+      const k = o.label.toLowerCase();
+      if (seen.has(k)) dup.add(k);
+      seen.add(k);
+    }
+    set = dup;
+    ambiguousCache.set(def, set);
+  }
+  return set;
+}
+
+/** 选项值的简短显示：只显示最后一级；末级名在该属性里有重名时显示完整路径（例如“通用/选择”与“英语/选择”）。 */
+function shortOptionLabel(def: PropertyDefDTO, path: string): string {
+  const last = path.split('/').at(-1) ?? path;
+  return ambiguousLabels(def).has(last.toLowerCase()) ? path : last;
+}
+
+/** 列表行里的属性：选项类显示为小标签（层级选项通常只显示最后一级），其他类型显示“名称：值”。 */
 function PropertyPills({ item, defs }: { item: ListItemDTO; defs: ReadonlyMap<string, PropertyDefDTO> }) {
   return (
     <>
@@ -38,7 +91,7 @@ function PropertyPills({ item, defs }: { item: ListItemDTO; defs: ReadonlyMap<st
         if (def.type === 'select' || def.type === 'multiselect') {
           return p.values.map((v) => (
             <span key={`${p.propertyId}:${v}`} className={`chip ${def.preset === 'difficulty' ? 'chip-warn' : def.preset === 'knowledge' ? 'chip-clay' : 'chip-stone'}`} title={`${def.name}：${v}`}>
-              {v.split('/').at(-1)}
+              {shortOptionLabel(def, v)}
             </span>
           ));
         }
@@ -150,7 +203,11 @@ export const ListRow = memo(function ListRow({
               {item.status ? <span className={`chip ${item.status === 'inbox' ? 'chip-warn' : 'chip-stone'}`}>{MATERIAL_STATUS_LABELS[item.status]}</span> : null}
               <HitBadges item={item} />
             </div>
-            <p className="line-clamp-2 text-sm text-ink-soft">{item.summary || (item.imageCount ? `${item.imageCount} 张图片` : '（无文字内容）')}</p>
+            {item.snippets?.length ? (
+              <Snippets item={item} />
+            ) : (
+              <p className="line-clamp-2 text-sm text-ink-soft">{item.summary || (item.imageCount ? `${item.imageCount} 张图片` : '（无文字内容）')}</p>
+            )}
             {item.attempt !== undefined ? (
               <div className="text-xs">
                 <AttemptBadge summary={item.attempt} studentName={studentName} />

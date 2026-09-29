@@ -108,9 +108,42 @@ export const ATTEMPT_FILTER_LABELS: Record<AttemptFilter, string> = {
   'wrong-last': '最近一次没做对',
 };
 
-/** 支持的图片格式；其他格式必须显式失败。 */
-export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
-export type ImageMime = (typeof IMAGE_MIME_TYPES)[number];
+/**
+ * 图片格式的唯一清单。
+ * - 可存储：附件只会是这四种；
+ * - 只能输入：收录时识别并转换成 WebP 再存（iPhone 的 HEIC/HEIF、AVIF）；
+ * 其他格式必须显式失败。
+ */
+export const STORABLE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+export type ImageMime = (typeof STORABLE_IMAGE_MIMES)[number];
+/** 旧名称，与 STORABLE_IMAGE_MIMES 相同 */
+export const IMAGE_MIME_TYPES = STORABLE_IMAGE_MIMES;
+
+export const INPUT_ONLY_IMAGE_MIMES = ['image/heic', 'image/heif', 'image/avif'] as const;
+export type InputOnlyImageMime = (typeof INPUT_ONLY_IMAGE_MIMES)[number];
+export type InputImageMime = ImageMime | InputOnlyImageMime;
+
+/** 文件选择器的 accept：部分浏览器不认识 HEIC 的 MIME，所以同时写扩展名 */
+export const IMAGE_ACCEPT = [...STORABLE_IMAGE_MIMES, ...INPUT_ONLY_IMAGE_MIMES, '.heic', '.heif', '.avif'].join(',');
+
+/** File.type 为空时（常见于 HEIC）按扩展名识别 */
+export const IMAGE_EXTENSION_MIMES: Record<string, InputImageMime> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+  heic: 'image/heic', heif: 'image/heif', avif: 'image/avif',
+};
+
+export const IMAGE_FORMAT_LABELS: Record<InputImageMime, string> = {
+  'image/png': 'PNG', 'image/jpeg': 'JPEG', 'image/webp': 'WebP', 'image/gif': 'GIF',
+  'image/heic': 'HEIC', 'image/heif': 'HEIF', 'image/avif': 'AVIF',
+};
+
+/** 文件是不是图片：先看 MIME，为空时看扩展名 */
+export function imageMimeOfFile(f: { type: string; name: string }): InputImageMime | null {
+  if (f.type && ([...STORABLE_IMAGE_MIMES, ...INPUT_ONLY_IMAGE_MIMES] as readonly string[]).includes(f.type)) return f.type as InputImageMime;
+  if (f.type && f.type.startsWith('image/')) return null;
+  const ext = f.name.toLowerCase().split('.').pop() ?? '';
+  return IMAGE_EXTENSION_MIMES[ext] ?? null;
+}
 
 /** 单个文本文件导入（.md / .txt）保存原始字节时使用的类型。 */
 export const TEXT_MIME_TYPES = ['text/markdown', 'text/plain'] as const;

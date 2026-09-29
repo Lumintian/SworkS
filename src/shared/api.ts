@@ -309,6 +309,17 @@ export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown };
 }
 
+/** 图片存储策略（只影响新收录的图片；已有附件不动）。 */
+export const imagePolicySchema = z.object({
+  enabled: z.boolean(),
+  pngLossless: z.boolean(),
+  photoQuality: z.number().int().min(40).max(100),
+  maxLongEdge: z.number().int().min(0).max(16383),
+  minSaving: z.number().min(0).max(0.9),
+}).strict();
+export type ImagePolicyDTO = z.infer<typeof imagePolicySchema>;
+export const DEFAULT_IMAGE_POLICY: ImagePolicyDTO = { enabled: true, pngLossless: true, photoQuality: 85, maxLongEdge: 3072, minSaving: 0.1 };
+
 export interface AssetDTO {
   id: string;
   sha256: string;
@@ -694,6 +705,8 @@ export interface BackupResultDTO extends BackupInfoDTO {
 export interface UploadResultDTO {
   asset: AssetDTO;
   rawInputId: string;
+  /** 收录时做了格式转换（例如 HEIC → WebP） */
+  conversion?: { from: string; to: string; originalSize: number; storedSize: number };
 }
 
 export interface TextFileImportDTO {

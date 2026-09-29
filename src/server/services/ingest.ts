@@ -11,7 +11,10 @@ import { nowIso, type DB } from '../db/connection.js';
 import { AppError, toAppError } from '../errors.js';
 import { toAssetDTO, type AssetRow } from './assetStore.js';
 import { ensureRemoteImages } from './entities.js';
-import { sniffImage, SUPPORTED_IMAGE_HINT } from './imageSniff.js';
+import { INPUT_ONLY_IMAGE_MIMES, IMAGE_FORMAT_LABELS, type ImageMime } from '../../shared/constants.js';
+import { prepareForStorage } from './imageConvert.js';
+import { SNIFF_BYTES, sniffImageInput, SUPPORTED_IMAGE_HINT } from './imageSniff.js';
+import { getImagePolicy } from './settings.js';
 import { missingLocalImages, remoteImageUrls } from './markdown.js';
 import { downloadImage, parseRemoteUrl } from './remoteFetch.js';
 import { toRemoteImageDTO, type RemoteImageRow } from './rows.js';
@@ -25,17 +28,23 @@ function insertRawInput(
     url?: string | null;
     originalFilename?: string | null;
     blockId?: string | null;
+    /** 收录时转换过格式：原文件的格式、大小与哈希（原字节不保留） */
+    original?: { mime: string; size: number; sha256: string } | null;
   },
 ): string {
   const id = randomUUID();
+  const o = r.original ?? null;
   db.prepare(
-    `INSERT INTO raw_inputs (id, kind, text, asset_id, url, original_filename, problem_id, material_id, block_id, captured_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
-  ).run(id, r.kind, r.text ?? null, r.assetId ?? null, r.url ?? null, r.originalFilename ?? null, r.blockId ?? null, nowIso());
+    `INSERT INTO raw_inputs (id, kind, text, asset_id, url, original_filename, problem_id, material_id, block_id, captured_at, original_mime, original_size, original_sha256)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)`,
+  ).run(id, r.kind, r.text ?? null, r.assetId ?? null, r.url ?? null, r.originalFilename ?? null, r.blockId ?? null, nowIso(), o?.mime ?? null, o?.size ?? null, o?.sha256 ?? null);
   return id;
 }
 
-/** 保存一张图片（剪贴板或本地文件），保留原始字节。 */
+/**
+ * 保存一张图片（剪贴板或本地文件）：按文件头识别格式，按图片策略转换（见 imageConvert），
+ * 原始输入记录原文件的格式、大小与哈希。
+ */
 export async function ingestImage(
   ctx: AppContext,
   data: Uint8Array,
@@ -46,18 +55,27 @@ export async function ingestImage(
   if (data.byteLength > ctx.limits.maxImageBytes) {
     throw new AppError('TOO_LARGE', `图片超过 ${Math.round(ctx.limits.maxImageBytes / 1024 / 1024)} MiB 上限`);
   }
-  const mime = sniffImage(data.subarray(0, 16));
+  const mime = sniffImageInput(data.subarray(0, SNIFF_BYTES));
   if (!mime) throw new AppError('UNSUPPORTED_MEDIA', `不支持的图片格式。${SUPPORTED_IMAGE_HINT}；文件未保存。`);
-  const file = await ctx.store.putBuffer(data, mime);
-  return ctx.db.transaction(() => {
+  const prepared = await prepareForStorage(data, mime, getImagePolicy(ctx.db));
+  if (prepared.warning) ctx.log.warn(prepared.warning);
+  const file = await ctx.store.putBuffer(prepared.data, prepared.mime);
+  return ctx.db.transaction((): UploadResultDTO => {
     const asset = ctx.store.insertRow(file, originalFilename);
     const rawInputId = insertRawInput(ctx.db, {
       kind: 'file',
       assetId: asset.id,
       originalFilename: asset.original_filename,
       blockId,
+      original: prepared.original,
     });
-    return { asset: toAssetDTO(asset), rawInputId };
+    return {
+      asset: toAssetDTO(asset),
+      rawInputId,
+      ...(prepared.original
+        ? { conversion: { from: IMAGE_FORMAT_LABELS[prepared.original.mime], to: IMAGE_FORMAT_LABELS[prepared.mime], originalSize: prepared.original.size, storedSize: prepared.data.byteLength } }
+        : {}),
+    };
   })();
 }
 
@@ -179,7 +197,13 @@ export class RemoteArchiver {
     try {
       await fsp.mkdir(this.ctx.paths.tmp, { recursive: true });
       const result = await downloadImage(row.url, this.ctx.fetchPolicy, tmp);
-      const file = await store.commitTemp(tmp, result);
+      // 远程图片逐字节保存（URL 本身就是来源凭据）；只有浏览器无法显示的 HEIC/AVIF 转换成 WebP
+      const file = (INPUT_ONLY_IMAGE_MIMES as readonly string[]).includes(result.mime)
+        ? await (async () => {
+            const prepared = await prepareForStorage(await fsp.readFile(tmp), result.mime, getImagePolicy(db), { convertStorable: false });
+            return store.putBuffer(prepared.data, prepared.mime);
+          })()
+        : await store.commitTemp(tmp, { ...result, mime: result.mime as ImageMime });
       db.transaction(() => {
         const name = safeNameFromUrl(result.finalUrl);
         const asset = store.insertRow(file, name);

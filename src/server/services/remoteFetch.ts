@@ -12,9 +12,9 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import ipaddr from 'ipaddr.js';
-import type { ImageMime } from '../../shared/constants.js';
+import { INPUT_ONLY_IMAGE_MIMES, STORABLE_IMAGE_MIMES, type InputImageMime } from '../../shared/constants.js';
 import { AppError } from '../errors.js';
-import { sniffImage, SUPPORTED_IMAGE_HINT } from './imageSniff.js';
+import { SNIFF_BYTES, sniffImageInput, SUPPORTED_IMAGE_HINT } from './imageSniff.js';
 
 export interface ResolvedAddress {
   address: string;
@@ -39,7 +39,8 @@ export interface FetchPolicy {
 export interface DownloadResult {
   sha256: string;
   size: number;
-  mime: ImageMime;
+  /** 可能是只能输入的格式（HEIC/AVIF），由归档器转换后再存 */
+  mime: InputImageMime;
   finalUrl: string;
 }
 
@@ -136,7 +137,7 @@ function requestOnce(url: URL, target: ResolvedAddress, signal: AbortSignal): Pr
       signal,
       headers: {
         'user-agent': 'SworkS/0.1 (local image archiver)',
-        accept: 'image/png,image/jpeg,image/webp,image/gif,image/*;q=0.8',
+        accept: `${[...STORABLE_IMAGE_MIMES, ...INPUT_ONLY_IMAGE_MIMES].join(',')},image/*;q=0.8`,
       },
     });
     req.on('response', resolve);
@@ -207,7 +208,7 @@ async function streamToFile(
         res.destroy();
         throw new AppError('TOO_LARGE', `图片超过 ${Math.round(maxBytes / 1024 / 1024)} MiB 上限`);
       }
-      if (head.length < 16) head = Buffer.concat([head, buf.subarray(0, 16 - head.length)]);
+      if (head.length < SNIFF_BYTES) head = Buffer.concat([head, buf.subarray(0, SNIFF_BYTES - head.length)]);
       hash.update(buf);
       if (!out.write(buf)) await new Promise<void>((r) => out.once('drain', r));
     }
@@ -224,7 +225,7 @@ async function streamToFile(
     out.destroy();
     throw err;
   }
-  const mime = sniffImage(head);
+  const mime = sniffImageInput(head);
   if (!mime) throw new AppError('UNSUPPORTED_MEDIA', `下载内容不是受支持的图片。${SUPPORTED_IMAGE_HINT}`);
   return { sha256: hash.digest('hex'), size, mime, finalUrl };
 }

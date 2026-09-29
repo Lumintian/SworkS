@@ -1,5 +1,5 @@
 /**
- * HTTP 应用的组合：安全中间件 → 请求体上限 → 各路由模块（`http/routes/`）→ 未知 /api 返回 404 → 静态页面。
+ * HTTP 应用的组合：安全中间件 → 请求体上限 → 各路由模块（`http/routes/`）→ 未知 /api 返回 404 → /mcp → 静态页面。
  * 路由只做参数校验与调用服务，业务逻辑都在 `services/`。
  */
 import { Hono } from 'hono';
@@ -14,6 +14,7 @@ import * as backup from './routes/backup.js';
 import * as events from './routes/events.js';
 import * as ingest from './routes/ingest.js';
 import * as materials from './routes/materials.js';
+import * as mcp from './routes/mcp.js';
 import * as problems from './routes/problems.js';
 import * as properties from './routes/properties.js';
 import * as savedSearches from './routes/savedSearches.js';
@@ -26,7 +27,7 @@ import { serveWeb } from './static.js';
 
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-const ROUTES: RegisterRoutes[] = [session, events, taxonomy, students, properties, problems, materials, savedSearches, ingest, assets, backup, settings].map((m) => m.register);
+const ROUTES: RegisterRoutes[] = [session, events, taxonomy, students, properties, problems, materials, savedSearches, ingest, assets, backup, settings, mcp].map((m) => m.register);
 
 export function createApp(ctx: AppContext): Hono {
   const app = new Hono();
@@ -59,6 +60,7 @@ export function createApp(ctx: AppContext): Hono {
   app.all('/api/*', () => {
     throw new AppError('NOT_FOUND', '接口不存在');
   });
+  mcp.registerMcpEndpoint(app, ctx);
 
   app.get('*', serveWeb(ctx.webDir));
   return app;

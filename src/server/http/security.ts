@@ -3,6 +3,8 @@
  * - 校验 Host（防 DNS 重绑定）；
  * - 修改类请求校验 Origin / Sec-Fetch-Site，并要求 CSRF 令牌头（跨源页面无法读取令牌，也无法无预检地发送自定义头）；
  * - 不返回任何 CORS 头；GET 不修改数据。
+ * `/mcp` 单独处理：它给本机的 MCP 客户端（命令行程序）用，不给网页用——
+ * 未启用时 404；带任何 Origin 或 Sec-Fetch-Site 不是 none（即来自浏览器）一律拒绝；必须带正确的 Bearer 令牌。
  */
 import { timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
@@ -16,6 +18,19 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
+/** /mcp 的检查（Host 已在前面校验）；通过时返回 null。 */
+function checkMcp(ctx: AppContext, header: (name: string) => string | undefined, method: string): Response | null {
+  if (!ctx.mcp.enabled || !ctx.mcp.token) return errorResponse('NOT_FOUND', 'MCP 未启用');
+  if (method === 'OPTIONS') return errorResponse('FORBIDDEN_ORIGIN', '不支持跨源访问');
+  if (header('origin') !== undefined) return errorResponse('FORBIDDEN_ORIGIN', 'MCP 不接受来自网页的请求');
+  const site = header('sec-fetch-site');
+  if (site !== undefined && site !== 'none') return errorResponse('FORBIDDEN_ORIGIN', 'MCP 不接受来自网页的请求');
+  const m = /^Bearer ([0-9a-f]{64})$/i.exec(header('authorization') ?? '');
+  if (!m || !safeEqual(m[1]!.toLowerCase(), ctx.mcp.token)) {
+    return errorResponse('UNAUTHORIZED', '缺少或无效的 MCP 令牌', { 'www-authenticate': 'Bearer realm="sworks"' });
+  }
+  return null;
+}
 
 export function securityMiddleware(ctx: AppContext): MiddlewareHandler {
   return async (c, next) => {
@@ -24,6 +39,14 @@ export function securityMiddleware(ctx: AppContext): MiddlewareHandler {
       return errorResponse('FORBIDDEN_HOST', '拒绝访问：请求的 Host 不是本机地址');
     }
     const method = c.req.method.toUpperCase();
+    if (c.req.path === '/mcp' || c.req.path.startsWith('/mcp/')) {
+      const denied = checkMcp(ctx, (n) => c.req.header(n), method);
+      if (denied) return denied;
+      await next();
+      c.header('X-Content-Type-Options', 'nosniff');
+      c.header('Cache-Control', 'no-store');
+      return;
+    }
     if (method === 'OPTIONS') return errorResponse('FORBIDDEN_ORIGIN', '不支持跨源访问');
     if (method !== 'GET' && method !== 'HEAD') {
       const origin = c.req.header('origin');

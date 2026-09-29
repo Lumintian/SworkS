@@ -16,6 +16,7 @@
     "start": "node dist/node/server/cli/start.js",
     "restore": "node dist/node/server/cli/restore.js",
     "mcp": "node dist/node/server/cli/mcp.js",
+    "mcp": "node dist/node/server/cli/mcp.js",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:e2e": "playwright test",

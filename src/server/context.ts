@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import type { Limits } from './config.js';
+import { DEFAULT_LIMITS } from './config.js';
+import type { DB } from './db/connection.js';
 import { EventBus } from './events/bus.js';
 import { installChangeLog } from './events/changes.js';
 import { SseHub } from './events/sse.js';
-import { DEFAULT_LIMITS } from './config.js';
-import type { DB } from './db/connection.js';
+import { loadMcpConfig, type McpConfig } from './mcp/config.js';
 import { getMeta } from './db/migrations.js';
 import type { DataPaths } from './paths.js';
 import { AssetStore } from './services/assetStore.js';
@@ -44,6 +45,8 @@ export interface AppContext {
   events: EventBus;
   /** 把变更事件推送给页面 */
   sse: SseHub;
+  /** MCP 设置（内存副本；修改时同时写回 mcp.json） */
+  mcp: McpConfig;
 }
 
 export interface ContextOptions {
@@ -74,6 +77,7 @@ export function createContext(opts: ContextOptions): AppContext {
     backupState: { running: false },
     webDir: opts.webDir ?? null,
     log: opts.log ?? consoleLogger,
+    mcp: loadMcpConfig(opts.paths.root),
   } as Omit<AppContext, 'archiver' | 'events' | 'sse'> as AppContext;
   ctx.events = new EventBus(ctx.log);
   ctx.sse = new SseHub(ctx.events);

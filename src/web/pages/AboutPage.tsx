@@ -40,7 +40,7 @@ export function AboutPage() {
       </dl>
       <div className="card-flat space-y-2 px-5 py-4 text-sm text-ink-soft">
         <p>
-          图片支持 PNG、JPEG、WebP、GIF。远程图片只从公网 http/https 地址下载，会拒绝本机、内网等地址；以上限制为工程默认值。
+          图片支持 PNG、JPEG、WebP、GIF，以及 iPhone 的 HEIC/HEIF 与 AVIF（收录时转换为 WebP，见“设置”）。远程图片只从公网 http/https 地址下载，会拒绝本机、内网等地址；以上限制为工程默认值。
         </p>
         <p>用户内容的权威副本在数据目录中；浏览器不保存唯一副本。搜索索引可随时重建。</p>
       </div>

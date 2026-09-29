@@ -377,6 +377,19 @@ export const savedSearchReorderSchema = z.object({ scope: z.enum(SAVED_SEARCH_SC
 
 
 /** 常用检索。text 按当前名称重新生成（属性、选项、学生改名后仍然有效）。 */
+/** MCP 接入的状态（设置页用）。令牌只在本机页面上显示。 */
+export interface McpStatusDTO {
+  enabled: boolean;
+  mode: 'read' | 'write';
+  url: string;
+  token: string;
+  /** Claude Code：`claude mcp add …` */
+  claudeCommand: string;
+  /** 只支持 stdio 的客户端的配置片段 */
+  stdioConfig: string;
+  dataDir: string;
+}
+
 export interface SavedSearchDTO {
   id: string;
   scope: SavedSearchScope;

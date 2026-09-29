@@ -14,6 +14,7 @@ import { ManagePage } from './pages/ManagePage';
 import { MaterialEditorPage } from './pages/MaterialEditorPage';
 import { StudentPage, StudentsPage } from './pages/StudentPages';
 import { ProblemEditorPage } from './pages/ProblemEditorPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { TrashPage } from './pages/TrashPage';
 
 function Routes() {
@@ -35,6 +36,7 @@ function Routes() {
   if (path === '/trash') return <TrashPage />;
   if (path === '/backup') return <BackupPage />;
   if (path === '/about') return <AboutPage />;
+  if (path === '/settings') return <SettingsPage />;
   if (path === '/manage') return <ManagePage />;
   if (path === '/students') return <StudentsPage />;
   if (isNewRoute) {

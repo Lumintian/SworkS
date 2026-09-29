@@ -25,11 +25,11 @@ export async function fsyncFile(file: string): Promise<void> {
   }
 }
 
-/** 写入临时文件 → fsync → 原子 rename 到目标。 */
-export async function writeFileAtomic(target: string, data: string | Uint8Array, tmpDir: string): Promise<void> {
+/** 写入临时文件 → fsync → 原子 rename 到目标。mode 为新文件权限（例如 0o600 只允许本人读写）。 */
+export async function writeFileAtomic(target: string, data: string | Uint8Array, tmpDir: string, mode = 0o666): Promise<void> {
   await fsp.mkdir(tmpDir, { recursive: true });
   const tmp = path.join(tmpDir, `${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
-  const handle = await fsp.open(tmp, 'wx');
+  const handle = await fsp.open(tmp, 'wx', mode);
   try {
     await handle.writeFile(data);
     await handle.sync();

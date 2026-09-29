@@ -2,13 +2,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import type { MaterialDTO, ProblemDTO } from '@shared/api';
-import { NOTE_TYPE_LABELS } from '@shared/constants';
+import { NOTE_TAB_ORDER, type SearchField } from '@shared/constants';
 import { assetUrl, errorMessage, getJSON } from '../../lib/api';
 import { formatTime } from '../../lib/format';
 import { useCatalog } from '../../lib/useCatalog';
 import { isEditableTarget, useKeydown } from '../../lib/hotkeys';
 import type { Collection } from '../../lib/queries';
 import { MarkdownAssetsContext, MarkdownView } from '../../markdown/MarkdownView';
+import { NotesTabs } from '../NotesTabs';
 import { Dialog, ErrorBox, Spinner } from '../ui';
 
 export function QuickLook({
@@ -18,9 +19,12 @@ export function QuickLook({
   onOpen,
   onPrev,
   onNext,
+  hits,
 }: {
   collection: Collection;
   id: string | null;
+  /** 列表项的检索命中字段：命中答案/解析/笔记时，默认打开对应的栏 */
+  hits?: readonly SearchField[] | undefined;
   onClose: () => void;
   onOpen: (id: string) => void;
   onPrev?: (() => void) | undefined;
@@ -131,16 +135,8 @@ export function QuickLook({
                 );
               })}
               {'notes' in e && e.notes.length ? (
-                <div className="space-y-3 border-t border-line pt-4">
-                  {e.notes.map((n) => (
-                    <section key={n.id} className="card-flat px-4 py-3">
-                      <h3 className="mb-1 text-sm font-semibold text-stone">
-                        {NOTE_TYPE_LABELS[n.type]}
-                        {n.title ? ` · ${n.title}` : ''}
-                      </h3>
-                      <MarkdownView source={n.bodyMd} />
-                    </section>
-                  ))}
+                <div className="border-t border-line pt-4">
+                  <NotesTabs key={e.id} notes={e.notes} preferred={NOTE_TAB_ORDER.find((t) => hits?.includes(t))} />
                 </div>
               ) : null}
             </div>

@@ -154,7 +154,7 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
 
         <section aria-labelledby="notes-h" className="space-y-3">
           <h2 id="notes-h" className="text-lg font-semibold text-stone">
-            笔记 · 答案 · 解析
+            笔记 · 解析 · 答案
           </h2>
           <MarkdownAssetsContext.Provider value={{ remoteImageUrls: ed.refs.remoteImageUrls, remoteImages: ed.refs.remoteImages }}>
             <NotesEditor notes={draft.notes} onChange={(u) => setDraft((d) => ({ ...d, notes: u(d.notes) }))} onImageFiles={uploadMd} />

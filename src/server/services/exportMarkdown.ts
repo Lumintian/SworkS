@@ -6,7 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { ProblemDTO } from '../../shared/api.js';
 import { assetRef, parseAssetRef } from '../../shared/assetRef.js';
-import { MIME_EXTENSIONS, NOTE_TYPE_LABELS } from '../../shared/constants.js';
+import { MIME_EXTENSIONS, NOTE_TAB_ORDER, NOTE_TYPE_LABELS } from '../../shared/constants.js';
 import type { AppContext } from '../context.js';
 import { AppError } from '../errors.js';
 import { timestampForFile } from '../fsutil.js';
@@ -149,19 +149,22 @@ export function renderProblemMarkdown(ctx: AppContext, p: ProblemDTO, st: Export
     }
     lines.push('');
   });
-  if (p.notes.length > 0) {
-    lines.push('## 笔记');
+  // 笔记按类型分节（笔记 → 解析 → 答案），节内按显示顺序；带序号的标题写成“解析 (1)：标题”
+  NOTE_TAB_ORDER.forEach((type) => {
+    const group = p.notes.filter((n) => n.type === type);
+    if (group.length === 0) return;
+    lines.push(`## ${NOTE_TYPE_LABELS[type]}`);
     lines.push('');
-    p.notes.forEach((n, i) => {
-      const heading = n.title ? `${NOTE_TYPE_LABELS[n.type]}：${n.title}` : NOTE_TYPE_LABELS[n.type];
+    group.forEach((n, i) => {
+      const heading = `${NOTE_TYPE_LABELS[type]}${n.seq !== null ? ` (${n.seq})` : ''}${n.title ? `：${n.title}` : ''}`;
       lines.push(`### ${heading}`);
       lines.push('');
-      lines.push(`<!-- sworks-note id=${n.id} type=${n.type} -->`);
+      lines.push(`<!-- sworks-note id=${n.id} type=${n.type}${n.seq !== null ? ` seq=${n.seq}` : ''} -->`);
       lines.push('');
-      lines.push(rewriteMarkdown(ctx, st, p, n.bodyMd, `${label} 第 ${i + 1} 条笔记`));
+      lines.push(rewriteMarkdown(ctx, st, p, n.bodyMd, `${label} 第 ${i + 1} 条${NOTE_TYPE_LABELS[type]}`));
       lines.push('');
     });
-  }
+  });
   return `${lines.join('\n').replace(/\n{3,}$/g, '\n\n').trimEnd()}\n`;
 }
 

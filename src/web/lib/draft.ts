@@ -1,6 +1,6 @@
 /** 编辑页的草稿模型：与服务端 DTO 互转，并生成用于比较“是否有未保存修改”的规范化载荷。 */
 import type { AssetDTO, BlockDTO, MaterialDTO, ProblemDTO, PropertyValueDTO, RemoteImageDTO } from '@shared/api';
-import type { BlockKind, MaterialStatus, NoteType } from '@shared/constants';
+import { NOTE_TYPE_LABELS, type BlockKind, type MaterialStatus, type NoteType } from '@shared/constants';
 import { newId } from './format';
 
 export interface DraftBlock {
@@ -17,6 +17,8 @@ export interface DraftNote {
   type: NoteType;
   title: string;
   bodyMd: string;
+  /** 可选序号（例如对应第几问）；显示顺序仍由数组顺序决定 */
+  seq: number | null;
 }
 
 export interface DraftSource {
@@ -78,7 +80,7 @@ export function newBlock(kind: BlockKind, init: Partial<DraftBlock> = {}): Draft
 }
 
 export function newNote(type: NoteType): DraftNote {
-  return { id: newId(), type, title: '', bodyMd: '' };
+  return { id: newId(), type, title: '', bodyMd: '', seq: null };
 }
 
 export function problemDraftFromDTO(p: ProblemDTO): ProblemDraft {
@@ -90,7 +92,7 @@ export function problemDraftFromDTO(p: ProblemDTO): ProblemDraft {
     tags: [...p.tags],
     properties: p.properties.map((v) => ({ ...v })),
     blocks: p.blocks.map(blockFromDTO),
-    notes: p.notes.map((n) => ({ id: n.id, type: n.type, title: n.title ?? '', bodyMd: n.bodyMd })),
+    notes: p.notes.map((n) => ({ id: n.id, type: n.type, title: n.title ?? '', bodyMd: n.bodyMd, seq: n.seq })),
     sources: p.sources.map((s) => ({
       materialId: s.materialId,
       materialTitle: s.materialTitle,
@@ -174,7 +176,7 @@ function basePayload(d: BaseDraft) {
 export function problemPayload(d: ProblemDraft) {
   return {
     ...basePayload(d),
-    notes: d.notes.map((n) => ({ id: n.id, type: n.type, title: short(n.title), bodyMd: n.bodyMd })),
+    notes: d.notes.map((n) => ({ id: n.id, type: n.type, title: short(n.title), bodyMd: n.bodyMd, seq: n.seq })),
     sources: [...d.sources]
       .sort((a, b) => a.materialId.localeCompare(b.materialId))
       .map((s) => ({ materialId: s.materialId, note: short(s.note) })),
@@ -212,6 +214,8 @@ export function draftAsText(d: BaseDraft & { notes?: DraftNote[] }): string {
     if (b.kind === 'image') parts.push(`[图片 ${b.assetId ?? b.remoteImageId}]${b.caption ? ` ${b.caption}` : ''}`);
     else parts.push(b.body);
   }
-  for (const n of d.notes ?? []) parts.push(`## ${n.type}${n.title ? `：${n.title}` : ''}\n\n${n.bodyMd}`);
+  for (const n of d.notes ?? []) {
+    parts.push(`## ${NOTE_TYPE_LABELS[n.type]}${n.seq !== null ? ` (${n.seq})` : ''}${n.title ? `：${n.title}` : ''}\n\n${n.bodyMd}`);
+  }
   return parts.join('\n\n');
 }

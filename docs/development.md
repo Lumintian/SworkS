@@ -57,17 +57,17 @@ pnpm exec playwright test tests/e2e/capture.spec.ts -g "两个页面"
 - 只用 pnpm，提交 `pnpm-lock.yaml`。
 - 版本精确锁定（不写 `^`/`~`），不引入预发布版本，也不锁定刚发布的新版本（pnpm 的最小发布时长策略会拦截它们）。
 - 需要执行安装脚本的依赖（原生模块、esbuild）必须列在 `pnpm-workspace.yaml` 的 `allowBuilds` 中。
-- 引入新依赖前检查许可证：`pnpm licenses list --prod`。
+- 引入新依赖前检查许可证：`pnpm licenses list --prod`。目前的例外：图片转换用的 `sharp`（Apache-2.0）自带的预编译 libvips（`@img/sharp-libvips-*`）是 LGPL-3.0-or-later，HEIC 解码用的 `libheif-js`（`heic-decode` 的依赖，WASM）是 LGPL-3.0；两者都作为独立的库动态加载、未经修改，满足 LGPL 的要求。sharp 的预编译版不能编码 HEVC，测试用的 HEIC 样本提交在 `tests/fixtures/images/`（生成方法见同目录的 README）。
 - 运行时不允许从 CDN 加载任何资源；字体、KaTeX 样式与字体都随构建打包。
-- 前端交互优先复用现成的库，不自己实现：菜单/右键菜单/弹出层用 Radix（`@radix-ui/react-*`），命令面板与可搜索选择器用 `cmdk`，树（导航、选项树编辑）用 `@headless-tree/*`，请求缓存用 `@tanstack/react-query`。对话框沿用 `components/ui.tsx` 的原生 `<dialog>`；在对话框里打开 Radix 弹出层时，要把 Portal 的 `container` 指向该对话框。
+- 前端交互优先复用现成的库，不自己实现：菜单/右键菜单/弹出层用 Radix（`@radix-ui/react-*`），命令面板与可搜索选择器用 `cmdk`，树（导航、选项树编辑）用 `@headless-tree/*`，可拖动排序的列表（笔记）用 `@dnd-kit/core` + `@dnd-kit/sortable`，请求缓存用 `@tanstack/react-query`。对话框沿用 `components/ui.tsx` 的原生 `<dialog>`；在对话框里打开 Radix 弹出层时，要把 Portal 的 `container` 指向该对话框。
 
 ## 修改数据库结构
 
-1. 新增 `src/server/db/schema-vN.ts` 并在 `migrations.ts` 追加迁移（版本号递增）。不要修改已发布的迁移（`schema-v1.ts`、`schema-v2.ts`、`schema-v3.ts`…）。迁移里只写 SQL 与固定数据，不调用业务代码。
+1. 新增 `src/server/db/schema-vN.ts` 并在 `migrations.ts` 追加迁移（版本号递增）。不要修改已发布的迁移（`schema-v1.ts`…`schema-v4.ts`）。迁移里只写 SQL 与固定数据，不调用业务代码。
 2. 更新 [schema.md](schema.md)。
 3. 更新备份格式：在 `services/backupFormat.ts` 新增 `RECORD_TABLES_VN`（在上一版基础上追加，旧版本定义保持冻结）、`ORDER_BY` 与 `BACKUP_VERSIONS` 的一行；递增 `BACKUP_SCHEMA_VERSION`。恢复会先建出备份对应版本的库再走迁移链，一般不需要额外代码；新表若由迁移写入了默认数据，恢复时会被统一清空再写入备份内容。更新 [backup-format.md](backup-format.md)。
 4. 如果新增的数据需要参与搜索，更新 `services/search.ts` 的投影。
-5. 补测试：新库初始化、从旧版本升级（含升级前安全备份，见 `tests/server/migration.test.ts`）、备份恢复往返、旧版本备份恢复（`tests/fixtures/backup-v1.sworks.zip` 由初版程序生成）。
+5. 补测试：新库初始化、从旧版本升级（含升级前安全备份，见 `tests/server/migration.test.ts`）、备份恢复往返、旧版本备份恢复（`tests/fixtures/backup-v1.sworks.zip` 由初版程序生成，`backup-v3.sworks.zip` 由 schema v3 的程序生成）。
 
 ## 约定
 

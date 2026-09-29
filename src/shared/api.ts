@@ -190,6 +190,13 @@ export const tagRenameSchema = z
 
 export const tagDeleteSchema = z.object({ path: z.string().min(1).max(200) }).strict();
 
+/** 一次删除多个标签（各含子树）。 */
+export const tagDeleteManySchema = z.object({ paths: z.array(z.string().min(1).max(200)).min(1).max(500) }).strict();
+/** 把多个标签（各含子树）移到某个标签之下（null 为顶层），保留末级名称。 */
+export const tagMoveSchema = z.object({ paths: z.array(z.string().min(1).max(200)).min(1).max(500), parent: z.string().min(1).max(200).nullable() }).strict();
+/** 把多个标签（各含子树）合并到同一个目标路径。 */
+export const tagMergeSchema = z.object({ from: z.array(z.string().min(1).max(200)).min(1).max(500), to: z.string().min(1).max(200) }).strict();
+
 // ---------- 自定义属性管理 ----------
 
 export const propertyCreateSchema = z
@@ -313,6 +320,10 @@ export const dictRenameSchema = z
   })
   .strict();
 export const dictReorderSchema = z.object({ values: z.array(z.string().min(1).max(50)).max(500) }).strict();
+export const dictValuesSchema = z.object({ values: z.array(z.string().min(1).max(50)).min(1).max(500) }).strict();
+/** 多个值合并到 into；into 为 null 表示从所有对象上清除 */
+export const dictMergeSchema = z.object({ values: z.array(z.string().min(1).max(50)).min(1).max(500), into: z.string().min(1).max(50).nullable() }).strict();
+
 
 // ---------- 响应类型 ----------
 

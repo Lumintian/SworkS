@@ -26,6 +26,8 @@ import {
   dictRenameSchema,
   dictReorderSchema,
   dictValueSchema,
+  dictValuesSchema,
+  dictMergeSchema,
   exportMarkdownSchema,
   materialCreateSchema,
   materialUpdateSchema,
@@ -37,6 +39,9 @@ import {
   savedSearchReorderSchema,
   savedSearchUpdateSchema,
   tagDeleteSchema,
+  tagDeleteManySchema,
+  tagMergeSchema,
+  tagMoveSchema,
   tagRenameSchema,
   type SessionDTO,
 } from '../../shared/api.js';
@@ -64,7 +69,7 @@ import {
 import { exportProblemsMarkdown } from '../services/exportMarkdown.js';
 import { getRemoteImage, ingestImage, ingestRemoteImageUrl, ingestText, ingestTextFile } from '../services/ingest.js';
 import { listEntities, listIds, type ListQuery } from '../services/search.js';
-import { addDictEntry, deleteTagPath, getDictManage, removeDictEntry, renameDictValue, renameTagPath, reorderDict } from '../services/taxonomy.js';
+import { addDictEntry, deleteTagPath, deleteTagPaths, getDictManage, mergeDictValues, mergeTagPaths, moveTagPaths, removeDictEntries, removeDictEntry, renameDictValue, renameTagPath, reorderDict } from '../services/taxonomy.js';
 import type { OwnerKind } from '../services/rows.js';
 import {
   createOption,
@@ -256,6 +261,15 @@ export function createApp(ctx: AppContext): Hono {
     const input = parse(tagDeleteSchema, await jsonBody(c));
     return c.json(deleteTagPath(ctx.db, input.path));
   });
+  app.post('/api/tags/delete-many', async (c) => c.json(deleteTagPaths(ctx.db, parse(tagDeleteManySchema, await jsonBody(c)).paths)));
+  app.post('/api/tags/move', async (c) => {
+    const input = parse(tagMoveSchema, await jsonBody(c));
+    return c.json(moveTagPaths(ctx.db, input.paths, input.parent));
+  });
+  app.post('/api/tags/merge', async (c) => {
+    const input = parse(tagMergeSchema, await jsonBody(c));
+    return c.json(mergeTagPaths(ctx.db, input.from, input.to));
+  });
   app.get('/api/dict/manage', (c) => c.json(getDictManage(ctx.db)));
 
   // ------------------------------------------------------------ 学生与作答记录（与题目内容版本无关）
@@ -380,6 +394,14 @@ export function createApp(ctx: AppContext): Hono {
     const input = parse(dictValueSchema, await jsonBody(c));
     removeDictEntry(ctx.db, c.req.param('kind'), input.value);
     return c.json(getDictManage(ctx.db));
+  });
+  app.post('/api/dict/:kind/remove-many', async (c) => {
+    removeDictEntries(ctx.db, c.req.param('kind'), parse(dictValuesSchema, await jsonBody(c)).values);
+    return c.json(getDictManage(ctx.db));
+  });
+  app.post('/api/dict/:kind/merge', async (c) => {
+    const input = parse(dictMergeSchema, await jsonBody(c));
+    return c.json(mergeDictValues(ctx.db, c.req.param('kind'), input.values, input.into));
   });
 
   // ------------------------------------------------------------ 题目

@@ -3,12 +3,13 @@
  * 会改动题目或资料的操作都先确认影响范围；服务端在同一事务里递增受影响对象的版本。
  */
 import { useQuery } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, Check, ChevronDown, Merge, Pencil, Plus, Trash2, X } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { ArrowUpToLine, Eye, Merge, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useState } from 'react';
 import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagDTO, TagRenameResultDTO } from '@shared/api';
-import { buildTagTree, flattenTagTree, tagKey, type TagTreeNode } from '@shared/tagPath';
-import { DropdownContent, DropdownItem, DropdownLabel, DropdownMenu, DropdownSeparator, DropdownTrigger } from '../components/Menu';
-import { ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
+import { buildTagTree, flattenTagTree, tagKey } from '@shared/tagPath';
+import { TagPicker } from '../components/list/TagPicker';
+import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
+import { Dialog, ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
 import { invalidateWrites } from '../lib/queryClient';
 import { useRouter } from '../lib/router';
@@ -30,82 +31,144 @@ function usage(p: number, m: number): string {
   return parts.length ? parts.join('、') : '未使用';
 }
 
-function InlineEdit({ initial, label, onSubmit, onCancel }: { initial: string; label: string; onSubmit: (v: string) => void; onCancel: () => void }) {
-  const [v, setV] = useState(initial);
+/** 选择合并目标：列出其他值，也可以直接输入一个新名称。 */
+function DictMergeDialog({
+  open,
+  label,
+  sources,
+  entries,
+  onPick,
+  onClose,
+}: {
+  open: boolean;
+  label: string;
+  sources: DictEntryDTO[];
+  entries: DictEntryDTO[];
+  onPick: (into: string) => void;
+  onClose: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const src = new Set(sources.map((s) => s.value));
+  const others = entries.filter((e) => !src.has(e.value));
   return (
-    <form
-      className="flex min-w-0 flex-1 items-center gap-1.5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (v.trim() && v.trim() !== initial) onSubmit(v.trim());
-        else onCancel();
-      }}
-    >
-      <input className="input py-1" value={v} autoFocus aria-label={label} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && onCancel()} />
-      <button type="submit" className="btn btn-sage btn-sm btn-icon" aria-label="确定">
-        <Check size={14} />
-      </button>
-      <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="取消" onClick={onCancel}>
-        <X size={14} />
-      </button>
-    </form>
+    <Dialog open={open} onClose={onClose} title={`把 ${sources.length} 个${label}合并到…`}>
+      <div className="space-y-3 text-sm">
+        <p className="text-ink-soft">所选的值在题目与资料上都会改为目标值，并从候选中移除。</p>
+        <ul className="flex flex-wrap gap-1.5" aria-label="合并目标">
+          {others.map((e) => (
+            <li key={e.value}>
+              <button type="button" className="btn btn-sm" onClick={() => onPick(e.value)}>
+                <Merge size={13} /> {e.value}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (typed.trim()) onPick(typed.trim());
+          }}
+        >
+          <input className="input" value={typed} maxLength={50} placeholder={`或输入新的${label}名称`} aria-label={`合并到新的${label}`} onChange={(e) => setTyped(e.target.value)} />
+          <button type="submit" className="btn btn-sage" disabled={!typed.trim()}>
+            合并
+          </button>
+        </form>
+      </div>
+    </Dialog>
   );
 }
 
-function Row({ children }: { children: ReactNode }) {
-  return <li className="card-flat flex flex-wrap items-center gap-2 px-3 py-2 text-sm">{children}</li>;
+interface DictNode extends ManageNode {
+  entry: DictEntryDTO;
 }
 
 function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] }) {
   const toast = useToast();
   const confirm = useConfirm();
-  const [editing, setEditing] = useState<string | null>(null);
+  const { navigate } = useRouter();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [merging, setMerging] = useState<DictEntryDTO[] | null>(null);
   const [adding, setAdding] = useState('');
   const label = KIND_LABEL[kind];
   const inDict = entries.filter((e) => e.inDict).map((e) => e.value);
+  const byValue = new Map(entries.map((e) => [e.value, e]));
+  const nodes: DictNode[] = entries.map((e) => ({
+    id: e.value,
+    parentId: null,
+    label: e.value,
+    hint: `${usage(e.problemCount, e.materialCount)}${e.inDict ? '' : ' · 不在候选中'}`,
+    muted: !e.inDict,
+    entry: e,
+  }));
 
   const call = async (fn: () => Promise<unknown>, ok: string) => {
     try {
       await fn();
       invalidateWrites();
       toast(ok, 'success');
+      return true;
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+      return false;
+    }
+  };
+  const total = (xs: DictEntryDTO[]) => ({ p: xs.reduce((a, x) => a + x.problemCount, 0), m: xs.reduce((a, x) => a + x.materialCount, 0) });
+  const names = (xs: DictEntryDTO[]) => xs.map((x) => `“${x.value}”`).join('、');
+
+  const rename = async (from: DictEntryDTO, to: string) => {
+    const target = byValue.get(to);
+    if (from.problemCount + from.materialCount > 0 || target) {
+      const ok = await confirm({
+        title: target ? `合并到“${to}”` : `改名为“${to}”`,
+        message: `${usage(from.problemCount, from.materialCount)}的${label}会从“${from.value}”改为“${to}”${target ? '，两者合并为一个' : ''}。仍打开着的编辑页需要重新加载才能保存。`,
+        confirmLabel: target ? '合并' : '改名',
+      });
+      if (!ok) return;
+    }
+    await call(() => sendJSON('POST', `/api/dict/${kind}/rename`, { from: from.value, to }), target ? '已合并' : '已改名');
+  };
+
+  /** 合并到 into；into 为 null 时从所有对象上清除并移出候选。 */
+  const mergeMany = async (xs: DictEntryDTO[], into: string | null) => {
+    const c = total(xs);
+    const ok = await confirm({
+      title: into === null ? `清除 ${xs.length} 个${label}` : `把 ${xs.length} 个${label}合并到“${into}”`,
+      message:
+        into === null
+          ? `将从约 ${usage(c.p, c.m)}上清除 ${names(xs)}，并把它们移出候选。`
+          : `约 ${usage(c.p, c.m)}的${label}会改为“${into}”。仍打开着的编辑页需要重新加载才能保存。`,
+      confirmLabel: into === null ? '清除' : '合并',
+      danger: into === null,
+    });
+    if (!ok) return;
+    try {
+      const r = await sendJSON<{ affectedItems: number }>('POST', `/api/dict/${kind}/merge`, { values: xs.map((x) => x.value), into });
+      invalidateWrites();
+      toast(`${into === null ? '已清除' : '已合并'}，影响 ${r.affectedItems} 项`, 'success');
+      setSelected(into === null ? [] : [into]);
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
   };
 
-  const rename = async (from: DictEntryDTO, to: string | null) => {
-    const n = from.problemCount + from.materialCount;
-    const target = to === null ? null : entries.find((e) => e.value === to);
-    if (n > 0 || target) {
-      const ok = await confirm({
-        title: to === null ? `清除${label}“${from.value}”` : target ? `合并到“${to}”` : `改名为“${to}”`,
-        message:
-          to === null
-            ? `将从 ${usage(from.problemCount, from.materialCount)}上清除“${from.value}”，并把它移出候选。`
-            : `${usage(from.problemCount, from.materialCount)}的${label}会从“${from.value}”改为“${to}”${target ? '，两者合并为一个' : ''}。仍打开着的编辑页需要重新加载才能保存。`,
-        confirmLabel: to === null ? '清除' : target ? '合并' : '改名',
-        danger: to === null,
-      });
-      if (!ok) return;
-    }
-    await call(() => sendJSON('POST', `/api/dict/${kind}/rename`, { from: from.value, to }), to === null ? '已清除' : target ? '已合并' : '已改名');
-    setEditing(null);
+  const removeFromDict = async (xs: DictEntryDTO[]) => {
+    if (await call(() => sendJSON('POST', `/api/dict/${kind}/remove-many`, { values: xs.map((x) => x.value) }), `已把 ${xs.length} 个值移出候选`)) setSelected([]);
   };
 
-  const move = (value: string, delta: number) => {
-    const order = [...inDict];
-    const i = order.indexOf(value);
-    const j = i + delta;
-    if (i < 0 || j < 0 || j >= order.length) return;
-    [order[i], order[j]] = [order[j]!, order[i]!];
-    void call(() => sendJSON('POST', `/api/dict/${kind}/reorder`, { values: order }), '已调整顺序');
+  /** 拖动排序：只重排候选；把不在候选中的值拖进来即加入候选。 */
+  const onMove = async (ids: string[], _parent: string | null, index: number | undefined) => {
+    const rest = entries.map((e) => e.value).filter((v) => !ids.includes(v));
+    const at = index === undefined ? rest.length : index;
+    const order = [...rest.slice(0, at), ...ids, ...rest.slice(at)].filter((v) => inDict.includes(v) || ids.includes(v));
+    await call(() => sendJSON('POST', `/api/dict/${kind}/reorder`, { values: order }), '已调整顺序');
   };
 
   return (
     <div className="space-y-3">
       <p className="text-sm text-ink-soft">
-        候选按这里的顺序出现在编辑页与导航中。改名与合并会同时改写题目和资料上的取值；不在候选中但有对象使用的值显示在下方，可以加入候选或合并到其他值。
+        候选按这里的顺序出现在编辑页与导航中，拖动即可调整。单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；F2 改名，Delete 清除所选。改名与合并会同时改写题目和资料上的取值。
       </p>
       <form
         className="flex max-w-md gap-2"
@@ -121,103 +184,116 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
           <Plus size={15} /> 添加
         </button>
       </form>
-      <ul className="space-y-1.5" aria-label={`${label}列表`}>
-        {entries.map((e) => (
-          <Row key={e.value}>
-            {editing === e.value ? (
-              <InlineEdit initial={e.value} label={`${label}新名称`} onSubmit={(v) => void rename(e, v)} onCancel={() => setEditing(null)} />
-            ) : (
-              <>
-                <span className={`min-w-0 flex-1 truncate font-semibold ${e.inDict ? 'text-stone' : 'text-ink-soft'}`} onDoubleClick={() => setEditing(e.value)}>
-                  {e.value}
-                  {e.inDict ? null : <span className="chip chip-warn ml-2 font-normal">不在候选中</span>}
-                </span>
-                <span className="text-xs text-ink-faint">{usage(e.problemCount, e.materialCount)}</span>
-                {e.inDict ? (
-                  <>
-                    <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`上移 ${e.value}`} disabled={inDict.indexOf(e.value) === 0} onClick={() => move(e.value, -1)}>
-                      <ArrowUp size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm btn-icon"
-                      aria-label={`下移 ${e.value}`}
-                      disabled={inDict.indexOf(e.value) === inDict.length - 1}
-                      onClick={() => move(e.value, 1)}
-                    >
-                      <ArrowDown size={14} />
-                    </button>
-                  </>
-                ) : (
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => void call(() => sendJSON('POST', `/api/dict/${kind}/add`, { value: e.value }), '已加入候选')}>
-                    <Plus size={14} /> 加入候选
-                  </button>
-                )}
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(e.value)}>
-                  <Pencil size={14} /> 改名
-                </button>
-                <DropdownMenu>
-                  <DropdownTrigger asChild>
-                    <button type="button" className="btn btn-ghost btn-sm">
-                      更多 <ChevronDown size={13} />
-                    </button>
-                  </DropdownTrigger>
-                  <DropdownContent align="end">
-                    <DropdownLabel>合并到</DropdownLabel>
-                    {entries
-                      .filter((x) => x.value !== e.value)
-                      .map((x) => (
-                        <DropdownItem key={x.value} onSelect={() => void rename(e, x.value)}>
-                          <Merge size={13} /> {x.value}
-                        </DropdownItem>
-                      ))}
-                    <DropdownSeparator />
-                    {e.problemCount + e.materialCount > 0 ? (
-                      <DropdownItem danger onSelect={() => void rename(e, null)}>
-                        <Trash2 size={13} /> 从所有对象上清除
-                      </DropdownItem>
-                    ) : e.inDict ? (
-                      <DropdownItem danger onSelect={() => void call(() => sendJSON('POST', `/api/dict/${kind}/remove`, { value: e.value }), '已移出候选')}>
-                        <Trash2 size={13} /> 移出候选
-                      </DropdownItem>
-                    ) : null}
-                  </DropdownContent>
-                </DropdownMenu>
-              </>
-            )}
-          </Row>
-        ))}
-      </ul>
+      <div className="card-flat px-2 py-2">
+        <ManageTree<DictNode>
+          label={`${label}列表`}
+          nodes={nodes}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+          emptyText={`还没有${label}。`}
+          drag={{ canReparent: false, canReorder: true, onMove }}
+          rename={{ label: `${label}新名称`, initial: (n) => n.entry.value, submit: (n, v) => void rename(n.entry, v) }}
+          onDelete={(sel) => {
+            const xs = sel.map((n) => n.entry);
+            if (xs.every((x) => x.problemCount + x.materialCount === 0)) void removeFromDict(xs);
+            else void mergeMany(xs, null);
+          }}
+          actions={(sel, { startRename }) => {
+            const xs = sel.map((n) => n.entry);
+            const one = xs.length === 1 ? xs[0] : undefined;
+            const used = xs.some((x) => x.problemCount + x.materialCount > 0);
+            return [
+              {
+                key: 'view',
+                label: '在题目列表中查看',
+                icon: <Eye size={13} />,
+                disabled: !one,
+                onSelect: () => one && navigate(`/problems?${new URLSearchParams({ [kind]: one.value }).toString()}`),
+              },
+              { key: 'rename', label: '改名', icon: <Pencil size={13} />, disabled: !one, onSelect: () => one && startRename(one.value) },
+              ...(xs.some((x) => !x.inDict)
+                ? [
+                    {
+                      key: 'add',
+                      label: '加入候选',
+                      icon: <Plus size={13} />,
+                      onSelect: () =>
+                        void call(
+                          () => sendJSON('POST', `/api/dict/${kind}/reorder`, { values: [...inDict, ...xs.filter((x) => !x.inDict).map((x) => x.value)] }),
+                          '已加入候选',
+                        ),
+                    },
+                  ]
+                : []),
+              { key: 'merge', label: '合并到…', icon: <Merge size={13} />, disabled: xs.length === 0, onSelect: () => setMerging(xs) },
+              used
+                ? { key: 'clear', label: `从所有对象上清除${xs.length > 1 ? ` ${xs.length} 项` : ''}`, icon: <Trash2 size={13} />, danger: true, separatorBefore: true, onSelect: () => void mergeMany(xs, null) }
+                : { key: 'remove', label: `移出候选${xs.length > 1 ? ` ${xs.length} 项` : ''}`, icon: <Trash2 size={13} />, danger: true, separatorBefore: true, disabled: xs.length === 0, onSelect: () => void removeFromDict(xs) },
+            ];
+          }}
+        />
+      </div>
+      <DictMergeDialog
+        open={merging !== null}
+        label={label}
+        sources={merging ?? []}
+        entries={entries}
+        onClose={() => setMerging(null)}
+        onPick={(into) => {
+          const xs = merging ?? [];
+          setMerging(null);
+          void mergeMany(xs, into);
+        }}
+      />
     </div>
   );
+}
+
+interface TagNode extends ManageNode {
+  path: string;
+  p: number;
+  m: number;
 }
 
 function TagsTab({ tags }: { tags: TagDTO[] }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { navigate } = useRouter();
-  const [editing, setEditing] = useState<string | null>(null);
-  const tree = buildTagTree(tags);
-  const nodes = flattenTagTree(tree);
-  const depth = (n: TagTreeNode) => n.key.split('/').length - 1;
-  const counts = (n: TagTreeNode) => {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [merging, setMerging] = useState<TagNode[] | null>(null);
+  const flat = flattenTagTree(buildTagTree(tags));
+  const counts = (key: string) => {
     let p = 0;
     let m = 0;
     for (const t of tags) {
       const k = tagKey(t.name);
-      if (k === n.key || k.startsWith(`${n.key}/`)) {
+      if (k === key || k.startsWith(`${key}/`)) {
         p += t.problemCount;
         m += t.materialCount;
       }
     }
     return { p, m };
   };
+  const nodes: TagNode[] = flat.map((n) => {
+    const c = counts(n.key);
+    const parentKey = n.key.includes('/') ? n.key.slice(0, n.key.lastIndexOf('/')) : null;
+    return { id: n.key, parentId: parentKey, label: n.name, hint: usage(c.p, c.m), muted: n.tagIds.length === 0, path: n.path, p: c.p, m: c.m };
+  });
+  const byKey = new Map(nodes.map((n) => [n.id, n]));
+  /** 只保留最上层：父子同时选中时按父级处理。 */
+  const topmost = (xs: TagNode[]) => xs.filter((x) => !xs.some((y) => y !== x && x.id.startsWith(`${y.id}/`)));
+  const sum = (xs: TagNode[]) => ({ p: xs.reduce((a, x) => a + x.p, 0), m: xs.reduce((a, x) => a + x.m, 0) });
+  const names = (xs: TagNode[]) => (xs.length <= 3 ? xs.map((x) => `“${x.path}”`).join('、') : `“${xs[0]!.path}”等 ${xs.length} 个标签`);
 
-  const rename = async (n: TagTreeNode, to: string) => {
-    const c = counts(n);
+  const report = (r: TagRenameResultDTO, verb: string) => {
+    invalidateWrites();
+    toast(`${verb}：改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, 'success');
+  };
+
+  const rename = async (n: TagNode, to: string) => {
     const ok = await confirm({
       title: `把“${n.path}”改为“${to}”`,
-      message: `连同下级标签一起改名（与已有标签同名时自动合并）。涉及约 ${usage(c.p, c.m)}；仍打开着的编辑页需要重新加载才能保存。`,
+      message: `连同下级标签一起改名（与已有标签同名时自动合并）。涉及约 ${usage(n.p, n.m)}；仍打开着的编辑页需要重新加载才能保存。`,
       confirmLabel: '改名',
     });
     if (!ok) return;
@@ -225,25 +301,55 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
       const r = await sendJSON<TagRenameResultDTO>('POST', '/api/tags/rename', { from: n.path, to });
       invalidateWrites();
       toast(`已改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, 'success');
-      setEditing(null);
+      setSelected([tagKey(to)]);
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
   };
 
-  const remove = async (n: TagTreeNode) => {
-    const c = counts(n);
+  const remove = async (sel: TagNode[]) => {
+    const xs = topmost(sel);
+    if (xs.length === 0) return;
+    const c = sum(xs);
     const ok = await confirm({
-      title: `删除标签“${n.path}”`,
-      message: `连同下级标签一起删除，并从 ${usage(c.p, c.m)}（含回收站中的）上移除。题目和资料本身不受影响。`,
-      confirmLabel: '删除标签',
+      title: xs.length === 1 ? `删除标签“${xs[0]!.path}”` : `删除 ${xs.length} 个标签`,
+      message: `${names(xs)}连同下级标签一起删除，并从约 ${usage(c.p, c.m)}（含回收站中的）上移除。题目和资料本身不受影响。`,
+      confirmLabel: xs.length === 1 ? '删除标签' : `删除 ${xs.length} 个标签`,
       danger: true,
     });
     if (!ok) return;
     try {
-      const r = await sendJSON<{ deleted: number; affectedItems: number }>('POST', '/api/tags/delete', { path: n.path });
+      const r = await sendJSON<{ deleted: number; affectedItems: number }>('POST', '/api/tags/delete-many', { paths: xs.map((x) => x.path) });
       invalidateWrites();
       toast(`已删除 ${r.deleted} 个标签，影响 ${r.affectedItems} 项`, 'success');
+      setSelected([]);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  const merge = async (sel: TagNode[], into: string) => {
+    const xs = topmost(sel);
+    const c = sum(xs);
+    const ok = await confirm({
+      title: `把 ${xs.length} 个标签合并到“${into}”`,
+      message: `${names(xs)}（连同下级）会改为“${into}”，与已有标签重名的自动合并。涉及约 ${usage(c.p, c.m)}；仍打开着的编辑页需要重新加载才能保存。`,
+      confirmLabel: '合并',
+    });
+    if (!ok) return;
+    try {
+      report(await sendJSON<TagRenameResultDTO>('POST', '/api/tags/merge', { from: xs.map((x) => x.path), to: into }), '已合并');
+      setSelected([tagKey(into)]);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
+  const moveTo = async (sel: TagNode[], parent: TagNode | null) => {
+    const xs = topmost(sel);
+    try {
+      report(await sendJSON<TagRenameResultDTO>('POST', '/api/tags/move', { paths: xs.map((x) => x.path), parent: parent?.path ?? null }), '已移动');
+      setSelected([]);
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
@@ -252,42 +358,60 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
   return (
     <div className="space-y-3">
       <p className="text-sm text-ink-soft">
-        标签用 <code className="rounded bg-sunken px-1">/</code> 分层，例如“方法/换元”。改名时填写完整路径即可移动到别的上级下；新名称与已有标签相同时会合并。
+        标签用 <code className="rounded bg-sunken px-1">/</code> 分层，例如“方法/换元”。单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；F2 改名（写完整路径即可移动），把标签拖到另一个标签上即移到它下面，Delete 删除所选。新名称与已有标签相同时会合并。
       </p>
-      {nodes.length === 0 ? <p className="text-sm text-ink-faint">还没有标签。</p> : null}
-      <ul className="space-y-1.5" aria-label="标签树">
-        {nodes.map((n) => {
-          const c = counts(n);
-          return (
-            <Row key={n.key}>
-              <span style={{ width: `${depth(n) * 1.25}rem` }} className="flex-none" aria-hidden="true" />
-              {editing === n.key ? (
-                <InlineEdit initial={n.path} label="标签新路径" onSubmit={(v) => void rename(n, v)} onCancel={() => setEditing(null)} />
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className={`min-w-0 flex-1 truncate text-left font-semibold ${n.tagIds.length ? 'text-stone' : 'text-ink-soft'}`}
-                    title={`查看带“${n.path}”的题目`}
-                    onClick={() => navigate(`/problems?${new URLSearchParams({ tag: n.path }).toString()}`)}
-                    onDoubleClick={() => setEditing(n.key)}
-                  >
-                    {n.name}
-                    {depth(n) > 0 ? <span className="ml-2 text-xs font-normal text-ink-faint">{n.path}</span> : null}
-                  </button>
-                  <span className="text-xs text-ink-faint">{usage(c.p, c.m)}</span>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(n.key)}>
-                    <Pencil size={14} /> 改名/移动
-                  </button>
-                  <button type="button" className="btn btn-ghost btn-sm hover:!text-terracotta" onClick={() => void remove(n)}>
-                    <Trash2 size={14} /> 删除
-                  </button>
-                </>
-              )}
-            </Row>
-          );
-        })}
-      </ul>
+      <div className="card-flat max-h-[70vh] overflow-y-auto px-2 py-2">
+        <ManageTree<TagNode>
+          label="标签树"
+          nodes={nodes}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+          expandAll
+          emptyText="还没有标签。"
+          drag={{
+            canReparent: true,
+            canReorder: false,
+            onMove: (ids, parentId) => moveTo(ids.map((id) => byKey.get(id)!).filter(Boolean), parentId ? (byKey.get(parentId) ?? null) : null),
+          }}
+          rename={{ label: '标签新路径', initial: (n) => n.path, submit: (n, v) => void rename(n, v) }}
+          onDelete={(sel) => void remove(sel)}
+          actions={(sel, { startRename }) => {
+            const one = sel.length === 1 ? sel[0] : undefined;
+            return [
+              {
+                key: 'view',
+                label: '在题目列表中查看',
+                icon: <Eye size={13} />,
+                disabled: !one,
+                onSelect: () => one && navigate(`/problems?${new URLSearchParams({ tag: one.path }).toString()}`),
+              },
+              { key: 'rename', label: '改名/移动', icon: <Pencil size={13} />, disabled: !one, onSelect: () => one && startRename(one.id) },
+              { key: 'top', label: '移到顶层', icon: <ArrowUpToLine size={13} />, disabled: !sel.some((x) => x.parentId !== null), onSelect: () => void moveTo(sel, null) },
+              { key: 'merge', label: '合并到…', icon: <Merge size={13} />, disabled: sel.length === 0, onSelect: () => setMerging(sel) },
+              {
+                key: 'delete',
+                label: sel.length > 1 ? `删除 ${topmost(sel).length} 个标签` : '删除',
+                icon: <Trash2 size={13} />,
+                danger: true,
+                separatorBefore: true,
+                disabled: sel.length === 0,
+                onSelect: () => void remove(sel),
+              },
+            ];
+          }}
+        />
+      </div>
+      <Dialog open={merging !== null} onClose={() => setMerging(null)} title={`把 ${merging?.length ?? 0} 个标签合并到…`}>
+        <TagPicker
+          tags={tags.map((t) => t.name)}
+          placeholder="选择或输入目标标签…"
+          onPick={(into) => {
+            const xs = merging ?? [];
+            setMerging(null);
+            void merge(xs, into);
+          }}
+        />
+      </Dialog>
     </div>
   );
 }

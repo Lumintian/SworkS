@@ -33,6 +33,9 @@ import {
   problemUpdateSchema,
   rawTextInputSchema,
   remoteImageCreateSchema,
+  savedSearchCreateSchema,
+  savedSearchReorderSchema,
+  savedSearchUpdateSchema,
   tagDeleteSchema,
   tagRenameSchema,
   type SessionDTO,
@@ -82,6 +85,14 @@ import {
   updatePropertyDef,
 } from '../services/properties.js';
 import { makeToucher } from '../services/touch.js';
+import {
+  createSavedSearch,
+  deleteSavedSearch,
+  listSavedSearches,
+  reorderSavedSearches,
+  savedSearchCounts,
+  updateSavedSearch,
+} from '../services/savedSearches.js';
 import {
   createAttempt,
   createAttemptsBatch,
@@ -183,6 +194,32 @@ export function createApp(ctx: AppContext): Hono {
     if (m === 'GET' || m === 'HEAD') return next();
     const id = c.req.header(CLIENT_HEADER);
     return originStore.run({ kind: 'web', ...(id && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? { clientId: id } : {}) }, next);
+  });
+
+  // ------------------------------------------------------------ 常用检索
+  app.get('/api/saved-searches', (c) => {
+    const scope = c.req.query('scope');
+    if (scope !== undefined && scope !== 'problem' && scope !== 'material') throw new AppError('VALIDATION', 'scope 应为 problem 或 material');
+    return c.json(listSavedSearches(ctx.db, scope as 'problem' | 'material' | undefined));
+  });
+  app.get('/api/saved-searches/counts', (c) => {
+    const scope = c.req.query('scope');
+    if (scope !== 'problem' && scope !== 'material') throw new AppError('VALIDATION', 'scope 应为 problem 或 material');
+    return c.json(savedSearchCounts(ctx.db, scope));
+  });
+  app.post('/api/saved-searches/reorder', async (c) => {
+    const input = parse(savedSearchReorderSchema, await jsonBody(c));
+    reorderSavedSearches(ctx.db, input.scope, input.ids);
+    return c.json(listSavedSearches(ctx.db, input.scope));
+  });
+  app.post('/api/saved-searches', async (c) => {
+    const r = createSavedSearch(ctx.db, parse(savedSearchCreateSchema, await jsonBody(c)));
+    return c.json(r.savedSearch, r.created ? 201 : 200);
+  });
+  app.put('/api/saved-searches/:id', async (c) => c.json(updateSavedSearch(ctx.db, uuidParam(c), parse(savedSearchUpdateSchema, await jsonBody(c)))));
+  app.post('/api/saved-searches/:id/delete', (c) => {
+    deleteSavedSearch(ctx.db, uuidParam(c));
+    return c.json({ ok: true });
   });
 
   // ------------------------------------------------------------ 会话与元信息

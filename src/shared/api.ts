@@ -331,6 +331,48 @@ export const imagePolicySchema = z.object({
 export type ImagePolicyDTO = z.infer<typeof imagePolicySchema>;
 export const DEFAULT_IMAGE_POLICY: ImagePolicyDTO = { enabled: true, pngLossless: true, photoQuality: 85, maxLongEdge: 3072, minSaving: 0.1 };
 
+export const SAVED_SEARCH_SCOPES = ['problem', 'material'] as const;
+export type SavedSearchScope = (typeof SAVED_SEARCH_SCOPES)[number];
+
+export const savedSearchCreateSchema = z
+  .object({
+    id,
+    scope: z.enum(SAVED_SEARCH_SCOPES),
+    name: z.string().min(1).max(60),
+    /** 查询文本；保存时解析，有错误时拒绝 */
+    text: z.string().min(1).max(1000),
+    sort: z.string().max(60).nullable().optional(),
+    showInNav: z.boolean().optional(),
+  })
+  .strict();
+
+export const savedSearchUpdateSchema = z
+  .object({
+    name: z.string().min(1).max(60).optional(),
+    text: z.string().min(1).max(1000).optional(),
+    sort: z.string().max(60).nullable().optional(),
+    showInNav: z.boolean().optional(),
+  })
+  .strict();
+
+export const savedSearchReorderSchema = z.object({ scope: z.enum(SAVED_SEARCH_SCOPES), ids: z.array(id).max(500) }).strict();
+
+
+/** 常用检索。text 按当前名称重新生成（属性、选项、学生改名后仍然有效）。 */
+export interface SavedSearchDTO {
+  id: string;
+  scope: SavedSearchScope;
+  name: string;
+  text: string;
+  sort: ListSort | null;
+  position: number;
+  showInNav: boolean;
+  /** 条件中已失效的部分（选项、标签或学生已删除等） */
+  problems: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AssetDTO {
   id: string;
   sha256: string;

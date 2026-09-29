@@ -1,5 +1,6 @@
 /** 前后端共享的请求校验 schema 与响应类型。 */
 import { z } from 'zod';
+import { isUuid } from './assetRef.js';
 import type { ListSort } from './listFilters.js';
 import type { Diagnostic } from './query/ast.js';
 import {
@@ -307,6 +308,14 @@ export const attemptBatchSchema = z
     ...attemptFields,
   })
   .strict();
+
+/** GET /api/attempts 的查询参数：无效的 ID 或数量按“未提供”处理。 */
+const lenientUuid = z.string().optional().transform((v) => (v && isUuid(v) ? v.toLowerCase() : undefined));
+export const attemptListQuerySchema = z.object({
+  studentId: lenientUuid,
+  problemId: lenientUuid,
+  limit: z.string().optional().transform((v) => (v && /^\d+$/.test(v) ? Number(v) : undefined)),
+});
 
 export const DICT_KINDS = ['subject', 'stage'] as const;
 export type DictKind = (typeof DICT_KINDS)[number];

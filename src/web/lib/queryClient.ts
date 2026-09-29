@@ -1,6 +1,6 @@
 /** 列表、导航计数与字典的请求缓存（TanStack Query）。编辑页的整份草稿不走这里。 */
 import { QueryClient } from '@tanstack/react-query';
-import { broadcastWrite, onWrite, type WriteEvent } from './broadcast';
+import { broadcastWrite, onWrite, TAB_ID, type WriteEvent } from './broadcast';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,13 +17,25 @@ export function invalidateWrites(e: WriteEvent = {}): void {
   broadcastWrite(e);
 }
 
-// 本页与其他标签页的写入都会让缓存失效
-onWrite(() => {
-  void queryClient.invalidateQueries({ queryKey: ['list'] });
-  void queryClient.invalidateQueries({ queryKey: ['nav'] });
-  void queryClient.invalidateQueries({ queryKey: ['catalog'] });
-  void queryClient.invalidateQueries({ queryKey: ['manage'] });
-  void queryClient.invalidateQueries({ queryKey: ['students'] });
-  void queryClient.invalidateQueries({ queryKey: ['attempts'] });
-  void queryClient.invalidateQueries({ queryKey: ['entity'] });
+const KEYS = ['list', 'nav', 'catalog', 'manage', 'students', 'attempts', 'entity'];
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+function invalidateAll(): void {
+  for (const k of KEYS) void queryClient.invalidateQueries({ queryKey: [k] });
+}
+
+// 本页与其他标签页的写入立即让缓存失效；服务端推送的事件合并 150ms 再失效（一次批量写入可能连着几条事件）
+onWrite((e) => {
+  if (!e.fromServer) {
+    invalidateAll();
+    return;
+  }
+  // 本页自己发出的写入已经在保存成功时处理过
+  if (e.originClient === TAB_ID) return;
+  if (timer) return;
+  timer = setTimeout(() => {
+    timer = null;
+    invalidateAll();
+  }, 150);
 });
+

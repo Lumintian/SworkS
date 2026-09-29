@@ -90,6 +90,7 @@ import {
   updatePropertyDef,
 } from '../services/properties.js';
 import { makeToucher } from '../services/touch.js';
+import { register as registerEvents } from './routes/events.js';
 import {
   createSavedSearch,
   deleteSavedSearch,
@@ -226,6 +227,8 @@ export function createApp(ctx: AppContext): Hono {
     deleteSavedSearch(ctx.db, uuidParam(c));
     return c.json({ ok: true });
   });
+
+  registerEvents(app, ctx);
 
   // ------------------------------------------------------------ 会话与元信息
   app.get('/api/session', (c) => {

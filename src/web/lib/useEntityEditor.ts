@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RemoteImageDTO, SaveResult } from '@shared/api';
 import { ApiError, errorMessage, getJSON, sendJSON } from './api';
-import { onWrite } from './broadcast';
+import { onWrite, TAB_ID } from './broadcast';
 import { mergeRefs, emptyRefs, type Refs } from './draft';
 import { invalidateWrites } from './queryClient';
 
@@ -186,6 +186,8 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
         if (!fromOtherTab || isNewRef.current || saving.current) return;
         const scoped = ev.problems !== undefined || ev.materials !== undefined;
         if (scoped && !(ev[collection] ?? []).includes(id)) return;
+        // 服务端事件：本页自己保存的、或版本与本页一致（只重建了检索投影）的，不用重新读取
+        if (ev.originClient === TAB_ID || ev.versions?.[id] === versionRef.current) return;
         void getJSON<E>(`/api/${collection}/${id}`).then(
           (e) => {
             if (e.version === versionRef.current) return;

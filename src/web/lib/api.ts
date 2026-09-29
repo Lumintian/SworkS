@@ -1,6 +1,7 @@
 /** 与本机服务通信。只有服务端确认落盘（2xx）才算成功。 */
 import type { ApiErrorBody, SessionDTO } from '@shared/api';
-import { CSRF_HEADER } from '@shared/constants';
+import { CLIENT_HEADER, CSRF_HEADER } from '@shared/constants';
+import { TAB_ID } from './broadcast';
 
 export class ApiError extends Error {
   readonly code: string;
@@ -52,6 +53,7 @@ async function send(method: string, url: string, init: { body?: BodyInit; json?:
       method,
       headers: {
         [CSRF_HEADER]: s.csrfToken,
+        [CLIENT_HEADER]: TAB_ID,
         ...(init.json ? { 'content-type': 'application/json' } : {}),
       },
       ...(init.body !== undefined ? { body: init.body } : {}),

@@ -1,4 +1,5 @@
 import { createContext, memo, useContext, type ReactNode } from 'react';
+import { IMAGE_ACCEPT } from '@shared/constants';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import type { RemoteImageDTO } from '@shared/api';
 import { classifyImageUrl, parseAssetRef } from '@shared/assetRef';
@@ -56,7 +57,7 @@ function MdImage({ src, alt, title }: { src?: string | Blob; alt?: string; title
                 手动补传
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  accept={IMAGE_ACCEPT}
                   className="sr-only"
                   onChange={(e) => {
                     const f = e.target.files?.[0];

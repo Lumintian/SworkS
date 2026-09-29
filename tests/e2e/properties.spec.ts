@@ -80,3 +80,46 @@ test('导入考点大纲 → 编辑页设难度与考点 → 导航按考点子�
   const list = await apiGet(server, `/api/problems?prop=${diff.id}:__none__`);
   expect(list.total).toBe(0);
 });
+
+test('题型分层：在编辑页新建“英语/完型填空”→ 逐级按钮选择 → 列表小标签 → 按题型排序', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const defs = (await apiGet(server, '/api/properties')) as { id: string; preset: string; nested: boolean }[];
+  const qt = defs.find((d) => d.preset === 'qtype')!;
+  expect(qt.nested).toBe(true);
+
+  // 1. 第一道题：从“+”里新建两级选项并选中
+  await page.goto(`${server.url}/problems`);
+  await page.getByTestId('new-problem').click();
+  await page.getByTestId('paste-zone').focus();
+  await pasteText(page, '[data-testid="paste-zone"]', 'Choose the best answer to complete the passage.');
+  await expect(page.getByTestId('content-block')).toHaveCount(1);
+  const editor = page.getByTestId('problem-editor');
+  await editor.getByRole('button', { name: '搜索或新建题型' }).click();
+  await page.getByRole('combobox', { name: '选择题型' }).fill('英语/完型填空');
+  await page.getByRole('option', { name: /新建“英语\/完型填空”/ }).click();
+  // 第二行出现“英语”的下级，“完型填空”为选中项
+  const sub = editor.getByRole('group', { name: '题型：英语 的下级' });
+  await expect(sub.getByRole('button', { name: '完型填空' })).toHaveAttribute('aria-pressed', 'true');
+  await saveAndWait(page);
+  const first = page.url().split('/').pop()!;
+
+  // 2. 第二道题：逐级点“填空”（顶层原有选项）
+  await page.getByTestId('new-problem').click();
+  await page.getByTestId('paste-zone').focus();
+  await pasteText(page, '[data-testid="paste-zone"]', '填空题：1+1=____');
+  await expect(page.getByTestId('content-block')).toHaveCount(1);
+  await page.getByTestId('problem-editor').getByRole('group', { name: '题型', exact: true }).getByRole('button', { name: '填空' }).click();
+  await saveAndWait(page);
+
+  const saved = await apiGet(server, `/api/problems/${first}`);
+  const def = ((await apiGet(server, '/api/properties')) as { id: string; options: { id: string; path: string }[] }[]).find((d) => d.id === qt.id)!;
+  const cloze = def.options.find((o) => o.path === '英语/完型填空')!;
+  expect(saved.properties).toEqual([{ propertyId: qt.id, optionIds: [cloze.id] }]);
+
+  // 3. 列表：小标签只显示末级；按题型排序时顶层“填空”在“英语/完型填空”之前
+  await page.goto(`${server.url}/problems`);
+  await page.getByRole('group', { name: '排序' }).getByRole('button', { name: '按题型' }).click();
+  await expect(page.getByTestId('list-item').nth(0)).toContainText('1+1');
+  await expect(page.getByTestId('list-item').nth(1)).toContainText('完型填空');
+  await expect(page.getByTestId('list-item').nth(1)).not.toContainText('英语/完型填空');
+});

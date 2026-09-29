@@ -1,7 +1,7 @@
 /** 家教工作台的整理交互：导航树筛选、多选与批量操作、命令面板、快速预览、数据管理。 */
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { apiGet, startServer, tempDir, type Server } from './helpers';
+import { apiGet, saveAndWait, startServer, tempDir, type Server } from './helpers';
 
 let server: Server | undefined;
 test.afterEach(async () => {
@@ -33,6 +33,24 @@ async function seed(s: Server, title: string, extra: Record<string, unknown> = {
 
 const rows = (page: Page) => page.getByTestId('list-item');
 
+/**
+ * 用键盘拖动一条笔记：空格拿起，按上方向键依次移到 targets 指定的位置（从 1 开始），再按空格放下。
+ * 以读屏播报确认每一步：拿起后先等到“移到第 from 条”（此时已完成碰撞计算），再按方向键。
+ */
+async function keyboardDrag(page: Page, handleName: string, from: number, targets: number[]) {
+  const handle = page.getByRole('button', { name: handleName });
+  await handle.focus();
+  await page.keyboard.press('Space');
+  await expect(handle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('status').filter({ hasText: `移到第 ${from} 条的位置` })).toHaveCount(1);
+  for (const n of targets) {
+    await page.keyboard.press('ArrowUp');
+    await expect(page.getByRole('status').filter({ hasText: `移到第 ${n} 条的位置` })).toHaveCount(1);
+  }
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('status').filter({ hasText: '已放到' })).toHaveCount(1);
+}
+
 test('导航树按标签子树筛选；Shift 连选后批量加标签并可撤销', async ({ page }) => {
   server = await startServer(path.join(tempDir(), 'data'));
   await seed(server, '单调性一', { tags: ['数学/函数/单调性'], subject: '数学' });
@@ -46,7 +64,9 @@ test('导航树按标签子树筛选；Shift 连选后批量加标签并可撤�
   // 父节点计数包含子树
   await expect(tree.getByRole('treeitem', { name: '数学' })).toContainText('2');
   await tree.getByRole('treeitem', { name: '数学' }).click();
-  await expect(page).toHaveURL(/tag=/);
+  // 点导航就是把条件写进搜索框（地址栏只有 q）
+  await expect(page).toHaveURL(/q=/);
+  await expect(page.getByTestId('search-input')).toHaveText('#数学');
   await expect(rows(page)).toHaveCount(2);
   await expect(page.getByTestId('result-count')).toContainText('共 2 项（已筛选）');
   // 再点一次取消筛选
@@ -121,16 +141,18 @@ test('数据管理：标签改名同步到题目；批量操作后陈旧编辑�
   server = await startServer(path.join(tempDir(), 'data'));
   const id = await seed(server, '换元题', { tags: ['方法/换元'] });
 
-  // 另一个浏览器上下文里先打开编辑页（收不到本浏览器的通知，模拟陈旧页面）
+  // 另一个浏览器上下文里先打开编辑页，并断开服务端推送（收不到任何通知，模拟陈旧页面）
   const other = await browser.newContext();
+  await other.route('**/api/events', (r) => r.abort());
   const stale = await other.newPage();
   await stale.goto(`${server.url}/problems/${id}`);
   await expect(stale.getByTestId('problem-editor')).toBeVisible();
 
   await page.goto(`${server.url}/manage?tab=tags`);
-  const list = page.getByRole('list', { name: '标签树' });
-  await expect(list).toContainText('换元');
-  await list.getByRole('listitem').filter({ hasText: '方法/换元' }).getByRole('button', { name: '改名/移动' }).click();
+  const tree = page.getByRole('tree', { name: '标签树', exact: true });
+  await expect(tree.getByRole('treeitem').filter({ hasText: '换元' })).toHaveCount(1);
+  await tree.getByRole('button', { name: '换元 的操作' }).click();
+  await page.getByRole('menuitem', { name: '改名/移动' }).click();
   await page.getByLabel('标签新路径').fill('技巧/换元法');
   await page.getByLabel('标签新路径').press('Enter');
   await page.getByTestId('confirm-ok').click();
@@ -142,5 +164,95 @@ test('数据管理：标签改名同步到题目；批量操作后陈旧编辑�
   await stale.getByTestId('save-button').click();
   await expect(stale.getByRole('dialog', { name: '保存冲突' })).toBeVisible();
   expect((await apiGet(server, `/api/problems/${id}`)).tags).toEqual(['技巧/换元法']);
+  await other.close();
+});
+
+test('笔记分栏：键盘拖动排序、填序号自动归位、按序号重排；快速预览按命中打开对应栏', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const [a, b, c, sol] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const id = await seed(server, '多问题', {
+    notes: [
+      { id: a, type: 'answer', bodyMd: '第一问答案' },
+      { id: sol, type: 'solution', bodyMd: '对勾函数的解析' },
+      { id: b, type: 'answer', bodyMd: '第二问答案' },
+      { id: c, type: 'answer', bodyMd: '第三问答案' },
+    ],
+  });
+  await page.goto(`${server.url}/problems/${id}`);
+  const tabs = page.getByRole('tablist', { name: '笔记类型' });
+  await tabs.getByRole('tab', { name: /^答案/ }).click();
+  const notes = page.getByTestId('note');
+  await expect(notes).toHaveCount(3);
+
+  // 键盘拖动：第 3 条移到最前（只在答案之间重排，解析的位置不变）
+  await keyboardDrag(page, '拖动排序：第 3 条答案（共 3 条）', 3, [2, 1]);
+  await expect(notes.first()).toContainText('第三问答案');
+  await saveAndWait(page);
+  expect((await apiGet(server, `/api/problems/${id}`)).notes.map((n: { id: string }) => n.id)).toEqual([c, sol, a, b]);
+
+  // 序号：第 3 条（第二问）填 2 → 不动；第 1 条（第三问）填 3 → 自动排到 (2) 之后
+  await page.getByLabel('第 3 条答案的序号').fill('2');
+  await page.keyboard.press('Enter');
+  await page.getByLabel('第 1 条答案的序号').fill('3');
+  await page.keyboard.press('Enter');
+  await expect(notes.nth(0)).toContainText('第一问答案');
+  await expect(notes.nth(1)).toContainText('第二问答案');
+  await expect(notes.nth(2)).toContainText('第三问答案');
+  await expect(page.getByRole('button', { name: '按序号重排' })).toHaveCount(0);
+
+  // 拖乱后出现“按序号重排”，点一下恢复
+  await keyboardDrag(page, '拖动排序：第 3 条答案（共 3 条）', 3, [2]);
+  await expect(notes.nth(1)).toContainText('第三问答案');
+  await page.getByRole('button', { name: '按序号重排' }).click();
+  await expect(notes.nth(1)).toContainText('第二问答案');
+  await expect(notes.nth(2)).toContainText('第三问答案');
+  await saveAndWait(page);
+  const saved = await apiGet(server, `/api/problems/${id}`);
+  expect(saved.notes.map((n: { id: string; seq: number | null }) => [n.id, n.seq])).toEqual([
+    [a, null],
+    [sol, null],
+    [b, 2],
+    [c, 3],
+  ]);
+
+  // 快速预览：命中解析时默认打开“解析”栏；答案栏的标题带序号
+  await page.goto(`${server.url}/problems?q=${encodeURIComponent('对勾')}`);
+  await expect(rows(page)).toHaveCount(1);
+  await page.keyboard.press('j');
+  await page.keyboard.press(' ');
+  const look = page.getByTestId('quick-look');
+  await expect(look.getByRole('tab', { name: /^解析/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(look).toContainText('对勾函数的解析');
+  await look.getByRole('tab', { name: /^答案/ }).click();
+  await expect(look).toContainText('(2) 答案');
+  await expect(look).not.toContainText('对勾函数的解析');
+});
+
+test('服务端推送：外部写入（不带页面 ID）即时刷新打开着的编辑页与列表', async ({ page, browser }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const id = await seed(server, '原标题');
+
+  const other = await browser.newContext();
+  const list = await other.newPage();
+  await list.goto(`${server.url}/problems`);
+  await expect(rows(list)).toHaveCount(1);
+
+  await page.goto(`${server.url}/problems/${id}`);
+  await expect(page.getByLabel('标题（可选）')).toHaveValue('原标题');
+
+  const current = await apiGet(server, `/api/problems/${id}`);
+  const r = await apiSend(server, 'PUT', `/api/problems/${id}`, {
+    expectedVersion: current.version,
+    title: '外部修改的标题',
+    blocks: current.blocks.map((b: { id: string; kind: string; body: string }) => ({ id: b.id, kind: b.kind, body: b.body })),
+  });
+  expect(r.status).toBe(200);
+  // 编辑页没有未保存修改：自动刷新
+  await expect(page.getByLabel('标题（可选）')).toHaveValue('外部修改的标题');
+  await expect(page.getByTestId('save-button')).toBeDisabled();
+
+  // 另一个浏览器上下文里的列表同样刷新
+  await seed(server, '外部新建的题');
+  await expect(rows(list)).toHaveCount(2);
   await other.close();
 });

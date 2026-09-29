@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { apiGet, pasteGeneratedImage, pasteText, saveAndWait, startServer, tempDir, typeInEditor, type Server } from './helpers';
+import { apiGet, pasteGeneratedImage, pasteText, ROOT, saveAndWait, startServer, tempDir, typeInEditor, type Server } from './helpers';
 
 let server: Server | undefined;
 test.afterEach(async () => {
@@ -47,14 +47,21 @@ test('粘贴截图即可保存；多块排序、类型化笔记、公式与 call
   await page.getByRole('button', { name: '上移第 2 块' }).click();
   await expect(page.getByTestId('content-block').first()).toHaveAttribute('data-block-kind', 'markdown');
 
-  // 3) 三类笔记
-  await page.getByRole('button', { name: '答案', exact: true }).click();
-  await typeInEditor(page, page.getByTestId('note').nth(0), ANSWER_MD);
-  await page.getByRole('button', { name: '解析', exact: true }).click();
-  await typeInEditor(page, page.getByTestId('note').nth(1), '令 $t=x^2$ 换元。');
-  await page.getByTestId('note').nth(1).getByLabel('笔记标题').fill('我的解法');
-  await page.getByRole('button', { name: '笔记', exact: true }).click();
-  await typeInEditor(page, page.getByTestId('note').nth(2), '这道题的关键是对勾函数。');
+  // 3) 三类笔记：按栏添加（笔记 / 解析 / 答案）
+  const noteTabs = page.getByRole('tablist', { name: '笔记类型' });
+  await noteTabs.getByRole('tab', { name: /^答案/ }).click();
+  await page.getByRole('button', { name: '添加答案' }).click();
+  await typeInEditor(page, page.getByTestId('note').first(), ANSWER_MD);
+  await noteTabs.getByRole('tab', { name: /^解析/ }).click();
+  await page.getByRole('button', { name: '添加解析' }).click();
+  await typeInEditor(page, page.getByTestId('note').first(), '令 $t=x^2$ 换元。');
+  await page.getByTestId('note').first().getByLabel('笔记标题').fill('我的解法');
+  await noteTabs.getByRole('tab', { name: /^笔记/ }).click();
+  await page.getByRole('button', { name: '添加笔记' }).click();
+  await typeInEditor(page, page.getByTestId('note').first(), '这道题的关键是对勾函数。');
+  // 每栏只显示该类型
+  await expect(page.getByTestId('note')).toHaveCount(1);
+  await expect(noteTabs.getByRole('tab', { name: /^答案/ })).toContainText('1');
   // 属性与标签（可选）
   await page.getByTestId('problem-editor').getByLabel('学科', { exact: true }).fill('数学');
   await page.getByLabel('添加标签').fill('函数');
@@ -88,6 +95,7 @@ test('粘贴截图即可保存；多块排序、类型化笔记、公式与 call
   await expect(page.getByTestId('content-block').nth(3)).toContainText('**字面** # 不是标题');
   // 公式与 callout 渲染；折叠的答案默认收起
   await expect(page.getByTestId('content-block').first().locator('.katex')).toHaveCount(1);
+  await page.getByRole('tablist', { name: '笔记类型' }).getByRole('tab', { name: /^答案/ }).click();
   const answer = page.getByTestId('note').first();
   const details = answer.locator('details.callout[data-callout="answer"]');
   await expect(details).toHaveCount(1);
@@ -139,8 +147,9 @@ test('两个页面编辑同一题：后保存的一方得到冲突提示，不�
   await typeInEditor(a, a.getByTestId('content-block').first(), '原始内容');
   await saveAndWait(a);
   const url = a.url();
-  // 另一个浏览器上下文：收不到本浏览器的跨标签页通知，模拟陈旧页面
+  // 另一个浏览器上下文，并断开服务端推送：收不到任何通知，模拟陈旧页面
   const ctxB = await browser.newContext();
+  await ctxB.route('**/api/events', (r) => r.abort());
   const b = await ctxB.newPage();
   await b.goto(url);
   await expect(b.getByTestId('content-block')).toHaveCount(1);
@@ -276,5 +285,21 @@ test('在列表中勾选题目导出 Markdown（含图片与 README）', async (
   const names = (await readZip(file)).map((e: { name: string }) => e.name).sort();
   expect(names).toContain(`sworks-export/problem-${id}.md`);
   expect(names).toContain('sworks-export/README.md');
-  expect(names.filter((n: string) => n.startsWith('sworks-export/assets/') && n.endsWith('.png'))).toHaveLength(1);
+  // 粘贴的截图收录时已转为无损 WebP
+  expect(names.filter((n: string) => n.startsWith('sworks-export/assets/') && n.endsWith('.webp'))).toHaveLength(1);
+});
+
+test('用文件选择器上传 iPhone 的 HEIC：转换为 WebP 后图片块正常显示，并提示转换结果', async ({ page }) => {
+  const dataDir = path.join(tempDir(), 'data');
+  server = await startServer(dataDir);
+  await page.goto(`${server.url}/problems`);
+  await page.getByTestId('new-problem').click();
+  await page.getByTestId('image-file-input').setInputFiles(path.join(ROOT, 'tests/fixtures/images/sample-p3.heic'));
+  await expect(page.getByText(/已转换：HEIC .* → WebP/)).toBeVisible();
+  const block = page.getByTestId('content-block');
+  await expect(block).toHaveCount(1);
+  await expect(block).toHaveAttribute('data-block-kind', 'image');
+  const img = block.locator('img.source-image');
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(96);
+  await saveAndWait(page);
 });

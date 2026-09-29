@@ -21,7 +21,8 @@ test('界面生成完整备份 → 下载 → 停服后 CLI 恢复到新目录 �
   await page.getByTestId('paste-zone').focus();
   await pasteGeneratedImage(page, '[data-testid="paste-zone"]', { width: 640, height: 320, label: 'BACKUP' });
   await expect(page.getByTestId('content-block')).toHaveCount(1);
-  await page.getByRole('button', { name: '解析', exact: true }).click();
+  await page.getByRole('tablist', { name: '笔记类型' }).getByRole('tab', { name: /^解析/ }).click();
+  await page.getByRole('button', { name: '添加解析' }).click();
   await typeInEditor(page, page.getByTestId('note').first(), '> [!tip]+ 恢复后应当保留\n> $$x^2$$');
   await saveAndWait(page);
   const id = page.url().split('/').pop()!;

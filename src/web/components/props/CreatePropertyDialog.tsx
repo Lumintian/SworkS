@@ -1,4 +1,4 @@
-/** 新建属性：名称、类型（每种带一个例子）、用在题目还是资料。选项是否分层不在这里问（第一次建下级时再确认）。 */
+/** 新建属性：名称、类型（每种带一个例子）、在题目还是资料中使用。选项是否分层不在这里问（第一次建下级时再确认）。 */
 import { useState } from 'react';
 import type { PropertyDefDTO } from '@shared/api';
 import { PROPERTY_TYPE_LABELS, type PropertyType } from '@shared/constants';
@@ -74,14 +74,14 @@ export function CreatePropertyDialog({ open, onClose, onCreated }: { open: boole
           ))}
         </fieldset>
         <fieldset className="flex flex-wrap items-center gap-4">
-          <legend className="label">用在</legend>
+          <legend className="sr-only">在哪里使用</legend>
           <label className="flex items-center gap-1.5">
             <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={problem} onChange={(e) => setProblem(e.target.checked)} />
-            题目
+            在题目中使用
           </label>
           <label className="flex items-center gap-1.5">
             <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={material} onChange={(e) => setMaterial(e.target.checked)} />
-            资料
+            在资料中使用
           </label>
           {!problem && !material ? <span className="text-xs text-terracotta">至少选一个</span> : null}
         </fieldset>

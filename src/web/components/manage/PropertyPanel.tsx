@@ -1,5 +1,5 @@
 /**
- * 数据管理 → 某个属性的详情：名称、类型（可改，内置属性除外）、有多少题目在用、用在题目/资料、
+ * 数据管理 → 某个属性的详情：名称、类型（可改，内置属性除外）、有多少题目在用、在题目/资料中使用、
  * 是否在左侧栏列出、归档；单选/多选属性下面是选项树。
  * 属性的几个操作（改名、左侧栏、归档…）也出现在左侧分类列表的右键菜单里，共用 usePropertyActions。
  */
@@ -16,6 +16,12 @@ import { OptionTreeEditor } from '../props/OptionTreeEditor';
 import { isNavType, isOptionType, NAV_HINT, PRESET_TYPE_HINT } from '../props/propertyText';
 import { useConfirm, useToast } from '../ui';
 import { NO_USAGE, usage as usageText, used } from './usage';
+
+/** 悬停在“在题目/资料中使用”上的说明 */
+const appliesHint = (kind: 'problem' | 'material') => {
+  const noun = kind === 'problem' ? '题目' : '资料';
+  return `${noun}的属性面板里有它，也能按它筛选${noun}。取消后已有的取值保留，只是不再显示`;
+};
 
 /** 不能改类型的原因；能改时为 null */
 export function retypeBlock(d: PropertyDefDTO): string | null {
@@ -42,15 +48,15 @@ export function usePropertyActions() {
   return {
     rename: (d: PropertyDefDTO, name: string) => update(d, { name }, '已改名', true),
     toggleNav: (d: PropertyDefDTO) => void update(d, { showInNav: !d.showInNav }, d.showInNav ? `左侧栏不再列出“${d.name}”` : `已在左侧栏列出“${d.name}”`, true),
-    /** “用在”题目/资料：关掉时如果已有取值，先说明取值会保留但不再显示 */
+    /** 在题目/资料中使用：关掉时如果已有取值，先说明取值会保留但不再显示 */
     setApplies: async (d: PropertyDefDTO, kind: 'problem' | 'material', on: boolean, u: UsageDTO | undefined) => {
       const noun = kind === 'problem' ? '题目' : '资料';
       const n = on ? 0 : (u?.[kind === 'problem' ? 'problems' : 'materials'] ?? 0);
       if (n > 0) {
         const ok = await confirm({
-          title: `“${d.name}”不再用在${noun}上`,
+          title: `“${d.name}”不再在${noun}中使用`,
           message: `已有 ${n} ${kind === 'problem' ? '道题' : '份资料'}设置了“${d.name}”。这些取值会保留，但${noun}里不再显示，也不能按它筛选和检索；重新勾选即可恢复。`,
-          confirmLabel: `不再用在${noun}上`,
+          confirmLabel: `不再在${noun}中使用`,
         });
         if (!ok) return;
       }
@@ -198,39 +204,32 @@ export function PropertyPanel({
           </button>
         </div>
       ) : (
-        <section className="card-flat space-y-3 px-4 py-3 text-sm" aria-label={`“${def.name}”的设置`}>
-          <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <legend className="sr-only">用在</legend>
-            <span className="w-24 text-ink-soft">用在</span>
-            {(['problem', 'material'] as const).map((kind) => {
-              const on = kind === 'problem' ? def.appliesProblem : def.appliesMaterial;
-              const other = kind === 'problem' ? def.appliesMaterial : def.appliesProblem;
-              return (
-                <label key={kind} className="flex items-center gap-1.5" title={on && !other ? '至少要用在题目或资料之一' : undefined}>
-                  <input
-                    type="checkbox"
-                    className="accent-[var(--color-sage-deep)]"
-                    checked={on}
-                    disabled={on && !other}
-                    onChange={(e) => void actions.setApplies(def, kind, e.target.checked, usage)}
-                  />
-                  {kind === 'problem' ? '题目' : '资料'}
-                </label>
-              );
-            })}
-            <span className="basis-full pl-24 text-xs text-ink-faint">只在勾选的地方出现在属性面板里，也只在那里能按它筛选。</span>
-          </fieldset>
-          {isNavType(def.type) ? (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="w-24 text-ink-soft">左侧栏</span>
-              <label className="flex items-center gap-1.5">
-                <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={def.showInNav} onChange={() => actions.toggleNav(def)} />
-                在左侧栏列出
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm" role="group" aria-label={`“${def.name}”的设置`}>
+          {(['problem', 'material'] as const).map((kind) => {
+            const on = kind === 'problem' ? def.appliesProblem : def.appliesMaterial;
+            const other = kind === 'problem' ? def.appliesMaterial : def.appliesProblem;
+            const hint = on && !other ? '至少要在题目或资料之一中使用' : appliesHint(kind);
+            return (
+              <label key={kind} className="flex items-center gap-1.5" title={hint}>
+                <input
+                  type="checkbox"
+                  className="accent-[var(--color-sage-deep)]"
+                  checked={on}
+                  disabled={on && !other}
+                  aria-description={hint}
+                  onChange={(e) => void actions.setApplies(def, kind, e.target.checked, usage)}
+                />
+                在{kind === 'problem' ? '题目' : '资料'}中使用
               </label>
-              <span className="basis-full pl-24 text-xs text-ink-faint">{NAV_HINT}。</span>
-            </div>
+            );
+          })}
+          {isNavType(def.type) ? (
+            <label className="flex items-center gap-1.5" title={NAV_HINT}>
+              <input type="checkbox" className="accent-[var(--color-sage-deep)]" checked={def.showInNav} aria-description={NAV_HINT} onChange={() => actions.toggleNav(def)} />
+              在左侧栏列出
+            </label>
           ) : null}
-        </section>
+        </div>
       )}
 
       {hasOptions && !def.archived ? (

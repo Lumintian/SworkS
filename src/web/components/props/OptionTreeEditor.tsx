@@ -323,7 +323,8 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
       </div>
       {def.nested ? (
         <p className="flex flex-wrap items-center gap-x-2 text-xs text-ink-faint">
-          <span>选项可以有下级：按“{def.name}”筛选时，选上级会包含全部下级。</span>
+          <span title={`按“${def.name}”筛选时，选上级会包含全部下级`}>选项可以有下级</span>
+          <span aria-hidden="true">·</span>
           <button
             type="button"
             className="link-btn text-xs"

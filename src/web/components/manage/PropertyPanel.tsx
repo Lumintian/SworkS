@@ -13,7 +13,7 @@ import { CATALOG_ONLY, invalidateWrites } from '../../lib/queryClient';
 import { Link } from '../../lib/router';
 import { DropdownContent, DropdownItem, DropdownMenu, DropdownTrigger } from '../Menu';
 import { OptionTreeEditor } from '../props/OptionTreeEditor';
-import { isNavType, isOptionType, NAV_HINT, PRESET_ARCHIVE_HINT, PRESET_TYPE_HINT } from '../props/propertyText';
+import { isNavType, isOptionType, NAV_HINT, PRESET_TYPE_HINT } from '../props/propertyText';
 import { useConfirm, useToast } from '../ui';
 import { NO_USAGE, usage as usageText, used } from './usage';
 

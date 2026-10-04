@@ -12,8 +12,7 @@ export const PROPERTY_TYPE_HINTS: Record<PropertyType, string> = {
 };
 
 export const NAV_HINT = '在左侧栏列出它的选项和数量，点一下即可按它筛选；也可以把题目拖到选项上来设置';
-/** 内置属性（题型、难度、考点）不能归档、不能改类型的原因 */
-export const PRESET_ARCHIVE_HINT = '内置属性不能归档；不想在左侧栏看到它，可以取消“在左侧栏列出”';
+/** 内置属性（题型、难度、考点）不能改类型的原因 */
 export const PRESET_TYPE_HINT = '内置属性不能改类型';
 
 export const isOptionType = (t: PropertyType) => t === 'select' || t === 'multiselect';

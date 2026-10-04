@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowUpToLine, Eye, Merge, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDTO, TagRenameResultDTO, UsageDTO } from '@shared/api';
-import { buildTagTree, flattenTagTree, tagKey } from '@shared/tagPath';
+import { buildTagTree, flattenTagTree, inSubtree, splitTagPath, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
 import { Dialog, ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
@@ -352,8 +352,39 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     }
   };
 
+  /** 移动后会与已有标签（或一起移动的其他标签）同名、从而合并掉的标签路径。 */
+  const mergesOnMove = (xs: TagNode[], parent: TagNode | null): string[] => {
+    const moving = (k: string) => xs.some((x) => inSubtree(k, x.id));
+    const taken = new Set(data.tags.map((t) => tagKey(t.name)).filter((k) => !moving(k)));
+    const out: string[] = [];
+    for (const x of xs) {
+      const to = parent ? `${parent.path}/${x.label}` : x.label;
+      for (const t of data.tags) {
+        const k = tagKey(t.name);
+        if (!inSubtree(k, x.id)) continue;
+        const next = tagKey(to) + k.slice(x.id.length);
+        if (next === k) continue;
+        if (taken.has(next)) out.push([to, ...splitTagPath(t.name).slice(splitTagPath(x.path).length)].join('/'));
+        taken.add(next);
+      }
+    }
+    return out;
+  };
+
   const moveTo = async (sel: TagNode[], parent: TagNode | null) => {
     const xs = topmost(sel);
+    const merges = mergesOnMove(xs, parent);
+    if (merges.length) {
+      const ok = await confirm({
+        title: '移动后会合并同名标签',
+        message: `移到${parent ? `“${parent.path}”下` : '顶层'}后，${merges
+          .slice(0, 3)
+          .map((m) => `“${m}”`)
+          .join('、')}${merges.length > 3 ? ` 等 ${merges.length} 个` : ''}与已有标签同名，会合并为一个，合并后不能再拆开。涉及 ${scope(xs)}。`,
+        confirmLabel: '移动并合并',
+      });
+      if (!ok) return;
+    }
     try {
       report(await sendJSON<TagRenameResultDTO>('POST', '/api/tags/move', { paths: xs.map((x) => x.path), parent: parent?.path ?? null }), '已移动');
       setSelected([]);

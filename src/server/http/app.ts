@@ -22,12 +22,15 @@ import * as session from './routes/session.js';
 import * as settings from './routes/settings.js';
 import * as students from './routes/students.js';
 import * as taxonomy from './routes/taxonomy.js';
+import * as undo from './routes/undo.js';
 import { securityMiddleware } from './security.js';
 import { serveWeb } from './static.js';
 
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-const ROUTES: RegisterRoutes[] = [session, events, taxonomy, students, properties, problems, materials, savedSearches, ingest, assets, backup, settings, mcp].map((m) => m.register);
+const ROUTES: RegisterRoutes[] = [session, events, taxonomy, students, properties, problems, materials, savedSearches, ingest, assets, backup, settings, undo, mcp].map(
+  (m) => m.register,
+);
 
 export function createApp(ctx: AppContext): Hono {
   const app = new Hono();

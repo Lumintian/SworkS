@@ -721,6 +721,8 @@ export interface TagRenameResultDTO {
   renamed: number;
   merged: number;
   affectedItems: number;
+  /** 可撤销时给出：短时间内 POST /api/undo/:id 撤销 */
+  undoId?: string;
 }
 
 /** 使用次数：未删除的题目、资料，以及回收站中的对象（题目与资料合计）。 */

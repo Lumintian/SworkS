@@ -293,7 +293,7 @@ describe('选项管理', () => {
     expect(def.options.find((o) => o.path === '数列/收敛')!.id).toBe(serConv);
     // 删除子树
     const del = await t.json('POST', `/api/property-options/${seq}/delete`);
-    expect(del.body).toEqual({ deleted: 3, affectedItems: 3 });
+    expect(del.body).toMatchObject({ deleted: 3, affectedItems: 3 });
     expect((await t.json('GET', `/api/problems/${c.id}`)).body.properties).toEqual([]);
     expect((await t.json('GET', `/api/problems?q=${encodeURIComponent('数列')}`)).body.total).toBe(0);
   });
@@ -360,7 +360,7 @@ describe('选项的多选批量操作', () => {
     const a = await create(t, { properties: [{ propertyId: kp.id, optionIds: [mono, seq, keep] }] });
     const res = await t.json('POST', '/api/property-options/delete-many', { ids: [mono, fn, seq] });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ deleted: 3, affectedItems: 1 });
+    expect(res.body).toMatchObject({ deleted: 3, affectedItems: 1 });
     expect(version(t, a.id)).toBe(2);
     expect((await t.json('GET', `/api/problems/${a.id}`)).body.properties).toEqual([{ propertyId: kp.id, optionIds: [keep] }]);
     expect((await preset(t, 'knowledge')).options.map((o) => o.path)).toEqual(['几何']);
@@ -381,7 +381,7 @@ describe('选项的多选批量操作', () => {
     expect((await preset(t, 'knowledge')).options).toHaveLength(4);
     const res = await t.json('POST', '/api/property-options/merge-many', { ids: [x, xChild, y], intoId: target });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ merged: 2, affectedItems: 1 });
+    expect(res.body).toMatchObject({ merged: 2, affectedItems: 1 });
     expect(version(t, a.id)).toBe(2);
     const opts = (await preset(t, 'knowledge')).options.map((o) => o.path);
     expect(opts).toEqual(['函数', '函数/单调性']);
@@ -415,7 +415,7 @@ describe('选项的多选批量操作', () => {
     const c = await ensure('函数的单调');
     const p = await create(t, { properties: [{ propertyId: kp.id, optionIds: [a, b] }] });
     const res = await t.json('POST', '/api/property-options/merge-many', { ids: [a, b], intoId: c });
-    expect(res.body).toEqual({ merged: 2, affectedItems: 1 });
+    expect(res.body).toMatchObject({ merged: 2, affectedItems: 1 });
     expect(version(t, p.id)).toBe(2);
     const indexed = (t.lib.db.prepare("SELECT text FROM search_index WHERE owner_id = ? AND field = 'property'").all(p.id) as { text: string }[]).map((r) => r.text);
     expect(indexed).toEqual(['函数的单调']);

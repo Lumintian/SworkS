@@ -9,6 +9,7 @@ import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDT
 import { buildTagTree, flattenTagTree, inSubtree, splitTagPath, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
+import { useUndoToast } from '../components/manage/useUndoToast';
 import { Dialog, ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
 import { invalidateWrites } from '../lib/queryClient';
@@ -95,8 +96,11 @@ interface DictNode extends ManageNode {
   entry: DictEntryDTO;
 }
 
+type Undoable = { undoId?: string };
+
 function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] }) {
   const toast = useToast();
+  const undoToast = useUndoToast();
   const confirm = useConfirm();
   const { navigate } = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
@@ -143,7 +147,13 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
       });
       if (!ok) return;
     }
-    await call(() => sendJSON('POST', `/api/dict/${kind}/rename`, { from: from.value, to }), target ? '已合并' : '已改名');
+    try {
+      const r = await sendJSON<{ affectedItems: number } & Undoable>('POST', `/api/dict/${kind}/rename`, { from: from.value, to });
+      invalidateWrites();
+      undoToast(`${target ? '已合并' : '已改名'}${r.affectedItems ? `，影响 ${r.affectedItems} 项` : ''}`, r.undoId);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
   };
 
   /** 合并到 into；into 为 null 时从所有对象上清除并移出候选。 */
@@ -160,9 +170,9 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
     });
     if (!ok) return;
     try {
-      const r = await sendJSON<{ affectedItems: number }>('POST', `/api/dict/${kind}/merge`, { values: xs.map((x) => x.value), into });
+      const r = await sendJSON<{ affectedItems: number } & Undoable>('POST', `/api/dict/${kind}/merge`, { values: xs.map((x) => x.value), into });
       invalidateWrites();
-      toast(`${into === null ? '已清除' : '已合并'}，影响 ${r.affectedItems} 项`, 'success');
+      undoToast(`${into === null ? '已清除' : '已合并'}，影响 ${r.affectedItems} 项`, r.undoId);
       setSelected(into === null ? [] : [into]);
     } catch (err) {
       toast(errorMessage(err), 'error');
@@ -272,6 +282,7 @@ interface TagNode extends ManageNode {
 
 function TagsTab({ data }: { data: TagManageDTO }) {
   const toast = useToast();
+  const undoToast = useUndoToast();
   const confirm = useConfirm();
   const { navigate } = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
@@ -296,7 +307,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
 
   const report = (r: TagRenameResultDTO, verb: string) => {
     invalidateWrites();
-    toast(`${verb}：改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, 'success');
+    undoToast(`${verb}：改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, r.undoId);
   };
 
   const rename = async (n: TagNode, to: string) => {
@@ -307,9 +318,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     });
     if (!ok) return;
     try {
-      const r = await sendJSON<TagRenameResultDTO>('POST', '/api/tags/rename', { from: n.path, to });
-      invalidateWrites();
-      toast(`已改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, 'success');
+      report(await sendJSON<TagRenameResultDTO>('POST', '/api/tags/rename', { from: n.path, to }), '已改名');
       setSelected([tagKey(to)]);
     } catch (err) {
       toast(errorMessage(err), 'error');
@@ -327,9 +336,9 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     });
     if (!ok) return;
     try {
-      const r = await sendJSON<{ deleted: number; affectedItems: number }>('POST', '/api/tags/delete-many', { paths: xs.map((x) => x.path) });
+      const r = await sendJSON<{ deleted: number; affectedItems: number } & Undoable>('POST', '/api/tags/delete-many', { paths: xs.map((x) => x.path) });
       invalidateWrites();
-      toast(`已删除 ${r.deleted} 个标签，影响 ${r.affectedItems} 项`, 'success');
+      undoToast(`已删除 ${r.deleted} 个标签，影响 ${r.affectedItems} 项`, r.undoId);
       setSelected([]);
     } catch (err) {
       toast(errorMessage(err), 'error');

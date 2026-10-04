@@ -72,7 +72,7 @@ describe('标签管理（按路径）', () => {
     const trashed = await create(t, { tags: ['来源/2023'] });
     await t.json('DELETE', `/api/problems/${trashed.id}`);
     const res = await t.json('POST', '/api/tags/delete', { path: '来源' });
-    expect(res.body).toEqual({ deleted: 3, affectedItems: 3 });
+    expect(res.body).toMatchObject({ deleted: 3, affectedItems: 3 });
     expect(await tagsOf(t, a.id)).toEqual(['保留']);
     expect(await tagsOf(t, m.id, 'materials')).toEqual([]);
     expect(await tagsOf(t, trashed.id)).toEqual([]);
@@ -101,7 +101,7 @@ describe('标签树的计数与清理', () => {
     // 清理：只删仍然没人用的行（期间被用上的跳过）
     const used = r.tags.find((x) => x.name === '函数')!;
     const del = await t.json('POST', '/api/tags/delete-unused', { ids: [unused[0]!.id, used.id] });
-    expect(del.body).toEqual({ deleted: 1 });
+    expect(del.body).toMatchObject({ deleted: 1 });
     const names = ((await t.json('GET', '/api/tags/manage')).body.tags as { name: string }[]).map((x) => x.name).sort();
     expect(names).toEqual(['函数', '几何/三角形', '几何/圆'].sort());
   });
@@ -123,7 +123,7 @@ describe('学科/学段字典管理', () => {
     const a = await create(t, { subject: '奥数' });
     const m = await create(t, { subject: '奥数' }, 'materials');
     const r = await t.json('POST', '/api/dict/subject/rename', { from: '奥数', to: '数学' });
-    expect(r.body).toEqual({ affectedItems: 2 });
+    expect(r.body).toMatchObject({ affectedItems: 2 });
     expect((await t.json('GET', `/api/problems/${a.id}`)).body.subject).toBe('数学');
     expect((await t.json('GET', `/api/materials/${m.id}`)).body.subject).toBe('数学');
     expect(version(t, a.id)).toBe(2);
@@ -176,7 +176,7 @@ describe('数据管理的多选批量操作', () => {
     const c = await create(t, { tags: ['保留'] });
     const res = await t.json('POST', '/api/tags/delete-many', { paths: ['数学/函数/单调性', '数学/函数', '易错', '待讲评', '不存在'] });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ deleted: 4, affectedItems: 2 });
+    expect(res.body).toMatchObject({ deleted: 4, affectedItems: 2 });
     expect(await tagsOf(t, a.id)).toEqual([]);
     expect(await tagsOf(t, b.id)).toEqual([]);
     expect(await tagsOf(t, c.id)).toEqual(['保留']);
@@ -221,10 +221,10 @@ describe('数据管理的多选批量操作', () => {
     await t.json('POST', '/api/dict/subject/add', { value: '竞赛' });
     let r = await t.json('POST', '/api/dict/subject/merge', { values: ['奥数', '竞赛'], into: '数学' });
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ affectedItems: 1 });
+    expect(r.body).toMatchObject({ affectedItems: 1 });
     expect((await t.json('GET', `/api/problems/${b.id}`)).body.subject).toBe('数学');
     r = await t.json('POST', '/api/dict/subject/merge', { values: ['数学'], into: null });
-    expect(r.body).toEqual({ affectedItems: 3 });
+    expect(r.body).toMatchObject({ affectedItems: 3 });
     expect((await t.json('GET', `/api/materials/${m.id}`)).body.subject).toBeNull();
     expect(version(t, a.id)).toBe(2);
     // 移出候选：物理仍在使用的值会整体失败

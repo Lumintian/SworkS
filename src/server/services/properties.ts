@@ -15,6 +15,7 @@ import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { ownerColumn, placeholders, type Owner, type OwnerKind } from './rows.js';
 import type { Toucher } from './touch.js';
+import { beginUndo, type UndoSpec } from './undoJournal.js';
 
 // ---------------------------------------------------------------- 行类型
 
@@ -660,13 +661,23 @@ export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: s
   })();
 }
 
+/** 撤销快照：这些选项行、用到它们的取值，以及常用检索（合并时会改写）。 */
+function optionUndoSpecs(ids: readonly string[]): UndoSpec[] {
+  const p = [JSON.stringify(ids)];
+  return [
+    { table: 'property_options', where: 'id IN (SELECT value FROM json_each(?))', params: p },
+    { table: 'property_values', where: 'option_id IN (SELECT value FROM json_each(?))', params: p },
+    { table: 'saved_searches', where: 'deleted_at IS NULL', params: [] },
+  ];
+}
+
 /** 删除选项（含子树）：选项软删除，对象上的这些取值移除（递增版本）。 */
-export function deleteOption(db: DB, optionId: string, touch: Toucher): { deleted: number; affectedItems: number } {
+export function deleteOption(db: DB, optionId: string, touch: Toucher): { deleted: number; affectedItems: number; undoId?: string | undefined } {
   return deleteOptions(db, [optionId], touch);
 }
 
 /** 一次删除多个选项（各含子树，可跨属性）：子树取并集，一个事务，每个对象只递增一次版本。 */
-export function deleteOptions(db: DB, optionIds: readonly string[], touch: Toucher): { deleted: number; affectedItems: number } {
+export function deleteOptions(db: DB, optionIds: readonly string[], touch: Toucher): { deleted: number; affectedItems: number; undoId?: string | undefined } {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const ids = new Set<string>();
@@ -682,6 +693,7 @@ export function deleteOptions(db: DB, optionIds: readonly string[], touch: Touch
       for (const id of optionSubtree(tree, o.id)) ids.add(id);
     }
     const list = [...ids];
+    const undo = beginUndo(db, '删除选项', ['properties'], optionUndoSpecs(list));
     const owners = ownersOfOptions(db, list);
     const ph = placeholders(list.length);
     const now = nowIso();
@@ -689,7 +701,7 @@ export function deleteOptions(db: DB, optionIds: readonly string[], touch: Touch
     db.prepare(`UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id IN (${ph})`).run(now, now, ...list);
     for (const owner of owners) touch.add(owner, true);
     touch.finish();
-    return { deleted: list.length, affectedItems: owners.length };
+    return { deleted: list.length, affectedItems: owners.length, undoId: undo.end() };
   })();
 }
 
@@ -697,13 +709,9 @@ export function deleteOptions(db: DB, optionIds: readonly string[], touch: Touch
  * 合并选项：source 上的取值转到 target（已有的不重复），source 的下级移到 target 下
  * （同名下级继续合并），然后软删除 source。常用检索里的 source 改指向 target。
  */
-export function mergeOption(db: DB, sourceId: string, targetId: string, touch: Toucher): { affectedItems: number } {
-  return db.transaction(() => {
-    recordCatalog(db, 'properties');
-    const affected = mergeOptionTx(db, getOption(db, sourceId), getOption(db, targetId), touch);
-    touch.finish();
-    return { affectedItems: affected.size };
-  })();
+export function mergeOption(db: DB, sourceId: string, targetId: string, touch: Toucher): { affectedItems: number; undoId?: string | undefined } {
+  const { affectedItems, undoId } = mergeOptions(db, [sourceId], targetId, touch);
+  return { affectedItems, undoId };
 }
 
 /** 合并的实际步骤（调用方负责事务与 finish）；返回取值被改动的对象（kind:id）。 */
@@ -746,7 +754,12 @@ function mergeOptionTx(db: DB, src: OptionRow, dst: OptionRow, touch: Toucher): 
  * 把多个选项合并到同一个目标：先整体校验（同一属性、目标不在任何源的子树内），再逐个合并；
  * 源的上级也被选中时随上级一起合并。一个事务，每个对象只递增一次版本，最后统一重建检索投影。
  */
-export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: string, touch: Toucher): { merged: number; affectedItems: number } {
+export function mergeOptions(
+  db: DB,
+  sourceIds: readonly string[],
+  targetId: string,
+  touch: Toucher,
+): { merged: number; affectedItems: number; undoId?: string | undefined } {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const dst = getOption(db, targetId);
@@ -761,10 +774,12 @@ export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: str
       for (let p = s.parent_id; p; p = tree.byId.get(p)?.parentId ?? null) if (selected.has(p)) return false;
       return true;
     });
+    const involved = new Set([dst, ...topmost].flatMap((o) => optionSubtree(tree, o.id)));
+    const undo = beginUndo(db, '合并选项', ['properties', 'savedSearches'], optionUndoSpecs([...involved]));
     const affected = new Set<string>();
     for (const s of topmost) for (const k of mergeOptionTx(db, getOption(db, s.id), getOption(db, dst.id), touch)) affected.add(k);
     touch.finish();
-    return { merged: topmost.length, affectedItems: affected.size };
+    return { merged: topmost.length, affectedItems: affected.size, undoId: undo.end() };
   })();
 }
 

@@ -11,6 +11,7 @@ import type { DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { normalizeShortText, placeholders, type Owner } from './rows.js';
 import { makeToucher, type Toucher } from './touch.js';
+import { beginUndo, type UndoSpec } from './undoJournal.js';
 
 const MAX_TAG_NAME = 60;
 
@@ -61,16 +62,39 @@ export function getTagManage(db: DB): TagManageDTO {
 }
 
 /** 删除没有任何对象（含回收站中的）在用的标签行；期间又被用上的跳过。标签行本身不含内容。 */
-export function deleteUnusedTags(db: DB, ids: readonly string[]): { deleted: number } {
+export function deleteUnusedTags(db: DB, ids: readonly string[]): { deleted: number; undoId?: string | undefined } {
   return db.transaction(() => {
     recordCatalog(db, 'tags');
+    const list = [...new Set(ids.map((x) => x.toLowerCase()))];
+    const undo = beginUndo(db, '清理未使用的标签', ['tags'], tagUndoSpecs(list));
     const del = db.prepare(
       'DELETE FROM tags WHERE id = ? AND NOT EXISTS (SELECT 1 FROM problem_tags WHERE tag_id = tags.id) AND NOT EXISTS (SELECT 1 FROM material_tags WHERE tag_id = tags.id)',
     );
     let deleted = 0;
-    for (const id of new Set(ids.map((x) => x.toLowerCase()))) deleted += del.run(id).changes;
-    return { deleted };
+    for (const id of list) deleted += del.run(id).changes;
+    return { deleted, undoId: undo.end() };
   })();
+}
+
+const IN_JSON = 'IN (SELECT value FROM json_each(?))';
+
+/** 这些路径（各含子树）下的全部标签行 ID。 */
+function idsInSubtrees(db: DB, paths: readonly string[]): string[] {
+  const keys = paths.map(tagKey).filter(Boolean);
+  return allTags(db)
+    .filter((t) => keys.some((k) => inSubtree(tagKey(t.name), k)))
+    .map((t) => t.id);
+}
+
+/** 撤销快照：这些标签行、它们的挂接，以及常用检索（会随标签改写）。 */
+function tagUndoSpecs(ids: readonly string[]): UndoSpec[] {
+  const p = [JSON.stringify(ids)];
+  return [
+    { table: 'tags', where: `id ${IN_JSON}`, params: p },
+    { table: 'problem_tags', where: `tag_id ${IN_JSON}`, params: p },
+    { table: 'material_tags', where: `tag_id ${IN_JSON}`, params: p },
+    { table: 'saved_searches', where: 'deleted_at IS NULL', params: [] },
+  ];
 }
 
 /** 挂着这些标签的全部对象（含回收站中的）。 */
@@ -114,10 +138,11 @@ function mergeTagInto(db: DB, fromId: string, intoId: string): void {
 export function renameTagPath(db: DB, from: string, to: string): TagRenameResultDTO {
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
+    const undo = beginUndo(db, '标签改名', ['tags', 'savedSearches'], tagUndoSpecs(idsInSubtrees(db, [from, to])));
     const touch = makeToucher(db);
     const r = renameTagPathTx(db, from, to, touch);
     touch.finish();
-    return { ...r, affectedItems: touch.bumpedCount };
+    return { ...r, affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 
@@ -183,6 +208,7 @@ export function mergeTagPaths(db: DB, from: readonly string[], to: string): TagR
   const toKey = tagKey(toName);
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
+    const undo = beginUndo(db, '合并标签', ['tags', 'savedSearches'], tagUndoSpecs(idsInSubtrees(db, [...from, toName])));
     const touch = makeToucher(db);
     let renamed = 0;
     let merged = 0;
@@ -194,7 +220,7 @@ export function mergeTagPaths(db: DB, from: readonly string[], to: string): TagR
       merged += r.merged;
     }
     touch.finish();
-    return { renamed, merged, affectedItems: touch.bumpedCount };
+    return { renamed, merged, affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 
@@ -206,14 +232,19 @@ export function moveTagPaths(db: DB, paths: readonly string[], parent: string | 
   const parentName = parent === null ? '' : normalizeTagInput(parent);
   if (parent !== null && !parentName) throw new AppError('VALIDATION', '目标标签不能为空');
   const parentKey = tagKey(parentName);
+  const destOf = (f: string) => {
+    const last = splitTagPath(f).at(-1) ?? '';
+    return parentName ? `${parentName}${TAG_SEP}${last}` : last;
+  };
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
+    const sources = topmostPaths(paths);
+    const undo = beginUndo(db, '移动标签', ['tags', 'savedSearches'], tagUndoSpecs(idsInSubtrees(db, [...sources, ...sources.map(destOf)])));
     const touch = makeToucher(db);
     let renamed = 0;
     let merged = 0;
-    for (const f of topmostPaths(paths)) {
-      const last = splitTagPath(f).at(-1)!;
-      const to = parentName ? `${parentName}${TAG_SEP}${last}` : last;
+    for (const f of sources) {
+      const to = destOf(f);
       if (tagKey(to) === tagKey(f)) continue;
       if (parentName && inSubtree(parentKey, tagKey(f))) throw new AppError('VALIDATION', `不能把“${f}”移到它自己的下级`);
       const r = renameTagPathTx(db, f, to, touch);
@@ -221,12 +252,12 @@ export function moveTagPaths(db: DB, paths: readonly string[], parent: string | 
       merged += r.merged;
     }
     touch.finish();
-    return { renamed, merged, affectedItems: touch.bumpedCount };
+    return { renamed, merged, affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 
 /** 删除标签（含整棵子树）：从全部对象（含回收站中的）上解除挂接，再删除已无引用的标签行。 */
-export function deleteTagPath(db: DB, path: string): { deleted: number; affectedItems: number } {
+export function deleteTagPath(db: DB, path: string): { deleted: number; affectedItems: number; undoId?: string | undefined } {
   return deleteTagPaths(db, [path]);
 }
 
@@ -234,13 +265,14 @@ export function deleteTagPath(db: DB, path: string): { deleted: number; affected
  * 一次删除多个标签（各含子树）。父子同时选中时按父级处理；一个事务完成，
  * 被多个所选标签命中的对象只递增一次版本。全部路径都不存在时报 NOT_FOUND。
  */
-export function deleteTagPaths(db: DB, paths: readonly string[]): { deleted: number; affectedItems: number } {
+export function deleteTagPaths(db: DB, paths: readonly string[]): { deleted: number; affectedItems: number; undoId?: string | undefined } {
   return db.transaction(() => {
     recordCatalog(db, 'tags');
     const ids = new Set<string>();
     for (const p of topmostPaths(paths)) for (const t of subtreeTags(db, p)) ids.add(t.id);
     if (ids.size === 0) throw new AppError('NOT_FOUND', '标签不存在');
     const list = [...ids];
+    const undo = beginUndo(db, '删除标签', ['tags', 'savedSearches'], tagUndoSpecs(list));
     const touch = makeToucher(db);
     for (const o of ownersOfTags(db, list)) touch.add(o, true);
     const ph = placeholders(list.length);
@@ -256,7 +288,7 @@ export function deleteTagPaths(db: DB, paths: readonly string[]): { deleted: num
       if (left.length === q.paths.length) return q;
       return left.length ? { k: 'tag', paths: left } : { k: 'false', reason: `标签“${q.paths.join('、')}”已删除` };
     });
-    return { deleted: list.length, affectedItems: touch.bumpedCount };
+    return { deleted: list.length, affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 
@@ -304,6 +336,19 @@ export function getDictManage(db: DB): DictManageDTO {
   return { subject: build('subject'), stage: build('stage') };
 }
 
+/** 撤销快照：字典、用到这些值的题目与资料（学科学段两列），以及常用检索。 */
+function dictUndoSpecs(kind: DictKind, values: readonly string[]): UndoSpec[] {
+  const p = [JSON.stringify(values.map(normalizeShortText).filter(Boolean))];
+  return [
+    { table: 'dict_entries', where: 'kind = ?', params: [kind] },
+    { table: 'problems', where: `${kind} ${IN_JSON}`, params: p },
+    { table: 'materials', where: `${kind} ${IN_JSON}`, params: p },
+    { table: 'saved_searches', where: 'deleted_at IS NULL', params: [] },
+  ];
+}
+
+const DICT_LABEL: Record<DictKind, string> = { subject: '学科', stage: '学段' };
+
 function requireValue(v: string): string {
   const t = normalizeShortText(v);
   if (!t) throw new AppError('VALIDATION', '名称不能为空');
@@ -325,14 +370,15 @@ export function addDictEntry(db: DB, kind: string, value: string): void {
  * 改名或合并：题目与资料上的取值一并改写（递增版本）。
  * to 为 null 时从所有对象上清除这个值并移出字典。
  */
-export function renameDictValue(db: DB, kind: string, from: string, to: string | null): { affectedItems: number } {
+export function renameDictValue(db: DB, kind: string, from: string, to: string | null): { affectedItems: number; undoId?: string | undefined } {
   assertKind(kind);
   return db.transaction(() => {
     recordCatalog(db, 'dict');
+    const undo = beginUndo(db, `${DICT_LABEL[kind]}${to === null ? '清除' : '改名'}`, ['dict', 'savedSearches'], dictUndoSpecs(kind, [from]));
     const touch = makeToucher(db);
     renameDictValueTx(db, kind, from, to, touch);
     touch.finish();
-    return { affectedItems: touch.bumpedCount };
+    return { affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 
@@ -371,14 +417,15 @@ function renameDictValueTx(db: DB, kind: DictKind, from: string, to: string | nu
 }
 
 /** 多个值一起合并到 into（to 为 null 时从所有对象上清除）；一个事务，每个对象只递增一次版本。 */
-export function mergeDictValues(db: DB, kind: string, values: readonly string[], into: string | null): { affectedItems: number } {
+export function mergeDictValues(db: DB, kind: string, values: readonly string[], into: string | null): { affectedItems: number; undoId?: string | undefined } {
   assertKind(kind);
   return db.transaction(() => {
     recordCatalog(db, 'dict');
+    const undo = beginUndo(db, `${DICT_LABEL[kind]}${into === null ? '清除' : '合并'}`, ['dict', 'savedSearches'], dictUndoSpecs(kind, values));
     const touch = makeToucher(db);
     for (const v of new Set(values)) renameDictValueTx(db, kind, v, into, touch);
     touch.finish();
-    return { affectedItems: touch.bumpedCount };
+    return { affectedItems: touch.bumpedCount, undoId: undo.end() };
   })();
 }
 

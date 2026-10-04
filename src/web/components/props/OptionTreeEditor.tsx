@@ -10,6 +10,7 @@ import { newId } from '../../lib/format';
 import { invalidateWrites } from '../../lib/queryClient';
 import { useRouter } from '../../lib/router';
 import { ManageTree, type ManageNode } from '../manage/ManageTree';
+import { useUndoToast } from '../manage/useUndoToast';
 import { Popover, PopoverContent, PopoverTrigger } from '../Menu';
 import { Dialog, useConfirm, useToast } from '../ui';
 import { OptionPicker } from './OptionPicker';
@@ -76,6 +77,7 @@ interface OptionNode extends ManageNode {
 
 export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
   const toast = useToast();
+  const undoToast = useUndoToast();
   const confirm = useConfirm();
   const { navigate } = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
@@ -127,9 +129,9 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     });
     if (!ok) return;
     try {
-      const r = await sendJSON<{ deleted: number; affectedItems: number }>('POST', '/api/property-options/delete-many', { ids: xs.map((x) => x.id) });
+      const r = await sendJSON<{ deleted: number; affectedItems: number; undoId?: string }>('POST', '/api/property-options/delete-many', { ids: xs.map((x) => x.id) });
       invalidateWrites();
-      toast(`已删除 ${r.deleted} 个选项，影响 ${r.affectedItems} 项`, 'success');
+      undoToast(`已删除 ${r.deleted} 个选项，影响 ${r.affectedItems} 项`, r.undoId);
       setSelected([]);
     } catch (err) {
       toast(errorMessage(err), 'error');
@@ -148,7 +150,14 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
       confirmLabel: '合并',
     });
     if (!ok) return;
-    if (await call(() => sendJSON('POST', '/api/property-options/merge-many', { ids: xs.map((x) => x.id), intoId }), '已合并')) setSelected([into.id]);
+    try {
+      const r = await sendJSON<{ affectedItems: number; undoId?: string }>('POST', '/api/property-options/merge-many', { ids: xs.map((x) => x.id), intoId });
+      invalidateWrites();
+      undoToast(`已合并${r.affectedItems ? `，影响 ${r.affectedItems} 项` : ''}`, r.undoId);
+      setSelected([into.id]);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
   };
 
   const move = (ids: string[], parentId: string | null, index: number | undefined) =>

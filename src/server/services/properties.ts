@@ -9,7 +9,7 @@
  */
 import { recordCatalog } from '../events/changes.js';
 import { randomUUID } from 'node:crypto';
-import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, PropertyValueDTO, PropertyValueInput } from '../../shared/api.js';
+import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, PropertyValueDTO, PropertyValueInput, UsageDTO } from '../../shared/api.js';
 import { PROPERTY_PRESETS, RESERVED_PROPERTY_NAMES, type PropertyPreset, type PropertyType } from '../../shared/constants.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
@@ -404,6 +404,35 @@ function ownersOfProperty(db: DB, propertyId: string): Owner[] {
  * 递增版本（按需）、重建检索投影。由调用方传入是为了避免与 entities/search 形成循环依赖。
  */
 export type { Toucher } from './touch.js';
+
+/**
+ * 数据管理：每个选项（含子树）下不重复的对象数，回收站中的对象单独计数。
+ * 冻结的取值（属性不再适用于这类对象）也算在内：删除、合并选项同样作用于它们。
+ */
+export function optionUsage(db: DB, propertyId: string): Record<string, UsageDTO> {
+  const d = requireOptionDef(db, propertyId);
+  const parentOf = new Map(optionTreeOf(db, d.id).ordered.map((o) => [o.id, o.parentId]));
+  const rows = db
+    .prepare(
+      `SELECT v.option_id, v.problem_id, v.material_id, COALESCE(p.deleted_at, m.deleted_at) AS deleted_at
+       FROM property_values v LEFT JOIN problems p ON p.id = v.problem_id LEFT JOIN materials m ON m.id = v.material_id
+       WHERE v.property_id = ? AND v.option_id IS NOT NULL`,
+    )
+    .all(d.id) as { option_id: string; problem_id: string | null; material_id: string | null; deleted_at: string | null }[];
+  const sets = new Map<string, { problems: Set<string>; materials: Set<string>; trashed: Set<string> }>();
+  for (const r of rows) {
+    for (let cur: string | null | undefined = r.option_id; cur; cur = parentOf.get(cur)) {
+      let s = sets.get(cur);
+      if (!s) sets.set(cur, (s = { problems: new Set(), materials: new Set(), trashed: new Set() }));
+      if (r.deleted_at) s.trashed.add(r.problem_id ? `p:${r.problem_id}` : `m:${r.material_id}`);
+      else if (r.problem_id) s.problems.add(r.problem_id);
+      else s.materials.add(r.material_id!);
+    }
+  }
+  const out: Record<string, UsageDTO> = {};
+  for (const [id, s] of sets) out[id] = { problems: s.problems.size, materials: s.materials.size, trashed: s.trashed.size };
+  return out;
+}
 
 // ---------------------------------------------------------------- 属性定义管理
 

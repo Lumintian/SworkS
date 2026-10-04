@@ -22,6 +22,7 @@ import {
   importOutline,
   listPropertyDefs,
   mergeOption,
+  optionUsage,
   mergeOptions,
   moveOption,
   moveOptions,
@@ -42,6 +43,7 @@ export const register: RegisterRoutes = (app, ctx) => {
     return c.json(listPropertyDefs(db, { includeArchived: true }));
   });
   app.get('/api/properties/:id', (c) => c.json(getPropertyDef(db, uuidParam(c))));
+  app.get('/api/properties/:id/usage', (c) => c.json(optionUsage(db, uuidParam(c))));
   app.put('/api/properties/:id', async (c) => {
     const input = await body(c, propertyUpdateSchema);
     return c.json(updatePropertyDef(db, uuidParam(c), input, makeToucher(db)));

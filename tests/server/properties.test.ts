@@ -298,6 +298,26 @@ describe('选项管理', () => {
     expect((await t.json('GET', `/api/problems?q=${encodeURIComponent('数列')}`)).body.total).toBe(0);
   });
 
+  it('使用次数：每个选项含子树、按不重复的对象计数，回收站中的单独计数', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const fn = await ensure('函数');
+    const mono = await ensure('函数/单调性');
+    const odd = await ensure('函数/奇偶性');
+    const seq = await ensure('数列');
+    await create(t, { properties: [{ propertyId: kp.id, optionIds: [mono, odd] }] });
+    const gone = await create(t, { properties: [{ propertyId: kp.id, optionIds: [odd] }] });
+    await t.request('DELETE', `/api/problems/${gone.id}`);
+    const u = (await t.json('GET', `/api/properties/${kp.id}/usage`)).body;
+    expect(u[fn]).toEqual({ problems: 1, materials: 0, trashed: 1 });
+    expect(u[mono]).toEqual({ problems: 1, materials: 0, trashed: 0 });
+    expect(u[odd]).toEqual({ problems: 1, materials: 0, trashed: 1 });
+    expect(u[seq]).toBeUndefined();
+    const diff = await preset(t, 'difficulty');
+    expect((await t.json('GET', `/api/properties/${diff.id}/usage`)).body).toEqual({});
+  });
+
   it('大纲导入：缩进、列表符号与标题表示层级；已有选项沿用', async () => {
     t = await makeTestApp();
     const kp = await preset(t, 'knowledge');

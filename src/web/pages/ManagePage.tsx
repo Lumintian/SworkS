@@ -9,6 +9,7 @@ import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDT
 import { buildTagTree, flattenTagTree, inSubtree, splitTagPath, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
+import { NO_USAGE, scopeText, sumUsage, UNDO_HINT, usage, used } from '../components/manage/usage';
 import { useUndoToast } from '../components/manage/useUndoToast';
 import { Dialog, ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
@@ -25,23 +26,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 const KIND_LABEL: Record<DictKind, string> = { subject: '学科', stage: '学段' };
 
-const NO_USAGE: UsageDTO = { problems: 0, materials: 0, trashed: 0 };
-
-function usage(u: UsageDTO): string {
-  const parts = [];
-  if (u.problems) parts.push(`${u.problems} 道题`);
-  if (u.materials) parts.push(`${u.materials} 份资料`);
-  if (u.trashed) parts.push(`回收站中 ${u.trashed} 项`);
-  return parts.length ? parts.join('、') : '未使用';
-}
-
 const usageOf = (e: DictEntryDTO): UsageDTO => ({ problems: e.problemCount, materials: e.materialCount, trashed: e.trashedCount });
-const used = (u: UsageDTO) => u.problems + u.materials + u.trashed > 0;
-const sumUsage = (xs: UsageDTO[]): UsageDTO => ({
-  problems: xs.reduce((a, x) => a + x.problems, 0),
-  materials: xs.reduce((a, x) => a + x.materials, 0),
-  trashed: xs.reduce((a, x) => a + x.trashed, 0),
-});
 
 /** 选择合并目标：列出其他值，也可以直接输入一个新名称。 */
 function DictMergeDialog({
@@ -142,7 +127,7 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
     if (used(usageOf(from)) || target) {
       const ok = await confirm({
         title: target ? `合并到“${to}”` : `改名为“${to}”`,
-        message: `${usage(usageOf(from))}的${label}会从“${from.value}”改为“${to}”${target ? '，两者合并为一个' : ''}。仍打开着的编辑页需要重新加载才能保存。`,
+        message: `${used(usageOf(from)) ? `${usage(usageOf(from))}的${label}会从“${from.value}”改为“${to}”` : `“${from.value}”会改为“${to}”`}${target ? '，两者合并为一个' : ''}。${UNDO_HINT}`,
         confirmLabel: target ? '合并' : '改名',
       });
       if (!ok) return;
@@ -163,8 +148,8 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
       title: into === null ? `清除 ${xs.length} 个${label}` : `把 ${xs.length} 个${label}合并到“${into}”`,
       message:
         into === null
-          ? `将从 ${usage(c)}上清除 ${names(xs)}，并把它们移出候选。`
-          : `${usage(c)}的${label}会改为“${into}”。仍打开着的编辑页需要重新加载才能保存。`,
+          ? `将从 ${usage(c)}上清除 ${names(xs)}，并把它们移出候选。${UNDO_HINT}`
+          : `${used(c) ? `${usage(c)}的${label}会改为“${into}”，` : ''}${names(xs)}移出候选。${UNDO_HINT}`,
       confirmLabel: into === null ? '清除' : '合并',
       danger: into === null,
     });
@@ -301,8 +286,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
   const byKey = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   /** 只保留最上层：父子同时选中时按父级处理。 */
   const topmost = (xs: TagNode[]) => xs.filter((x) => !xs.some((y) => y !== x && x.id.startsWith(`${y.id}/`)));
-  /** 多个子树的计数相加时，同时挂着两边标签的对象会被算两次，所以写“约” */
-  const scope = (xs: TagNode[]) => `${xs.length > 1 ? '约 ' : ''}${usage(sumUsage(xs.map((x) => x.usage)))}`;
+  const scope = (xs: TagNode[]) => scopeText(xs.map((x) => x.usage));
   const names = (xs: TagNode[]) => (xs.length <= 3 ? xs.map((x) => `“${x.path}”`).join('、') : `“${xs[0]!.path}”等 ${xs.length} 个标签`);
 
   const report = (r: TagRenameResultDTO, verb: string) => {
@@ -313,7 +297,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
   const rename = async (n: TagNode, to: string) => {
     const ok = await confirm({
       title: `把“${n.path}”改为“${to}”`,
-      message: `连同下级标签一起改名（与已有标签同名时自动合并）。涉及 ${usage(n.usage)}；仍打开着的编辑页需要重新加载才能保存。`,
+      message: `连同下级标签一起改名，与已有标签同名时自动合并。${used(n.usage) ? `涉及 ${usage(n.usage)}。` : ''}${UNDO_HINT}`,
       confirmLabel: '改名',
     });
     if (!ok) return;
@@ -330,7 +314,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     if (xs.length === 0) return;
     const ok = await confirm({
       title: xs.length === 1 ? `删除标签“${xs[0]!.path}”` : `删除 ${xs.length} 个标签`,
-      message: `${names(xs)}连同下级标签一起删除，并从 ${scope(xs)}上移除。题目和资料本身不受影响。`,
+      message: `${names(xs)}连同下级标签一起删除。${scope(xs) ? `会从 ${scope(xs)}上移除，题目和资料本身不受影响。` : ''}${UNDO_HINT}`,
       confirmLabel: xs.length === 1 ? '删除标签' : `删除 ${xs.length} 个标签`,
       danger: true,
     });
@@ -349,7 +333,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     const xs = topmost(sel);
     const ok = await confirm({
       title: `把 ${xs.length} 个标签合并到“${into}”`,
-      message: `${names(xs)}（连同下级）会改为“${into}”，与已有标签重名的自动合并。涉及 ${scope(xs)}；仍打开着的编辑页需要重新加载才能保存。`,
+      message: `${names(xs)}（连同下级）会改为“${into}”，与已有标签重名的自动合并。${scope(xs) ? `涉及 ${scope(xs)}。` : ''}${UNDO_HINT}`,
       confirmLabel: '合并',
     });
     if (!ok) return;
@@ -389,7 +373,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
         message: `移到${parent ? `“${parent.path}”下` : '顶层'}后，${merges
           .slice(0, 3)
           .map((m) => `“${m}”`)
-          .join('、')}${merges.length > 3 ? ` 等 ${merges.length} 个` : ''}与已有标签同名，会合并为一个，合并后不能再拆开。涉及 ${scope(xs)}。`,
+          .join('、')}${merges.length > 3 ? ` 等 ${merges.length} 个` : ''}与已有标签同名，会合并为一个。${scope(xs) ? `涉及 ${scope(xs)}。` : ''}${UNDO_HINT}`,
         confirmLabel: '移动并合并',
       });
       if (!ok) return;

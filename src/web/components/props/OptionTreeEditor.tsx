@@ -2,14 +2,16 @@
  * 选项树编辑（基于 ManageTree / headless-tree）：多选、右键菜单、拖动排序与改变上级、F2 或双击改名、Delete 删除；
  * 工具栏新建同级/下级、删除（含子树）、合并到其他选项、导入大纲。
  */
+import { useQuery } from '@tanstack/react-query';
 import { ArrowUpToLine, Eye, FileInput, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import type { PropertyDefDTO, PropertyOptionDTO } from '@shared/api';
-import { errorMessage, sendJSON } from '../../lib/api';
+import type { PropertyDefDTO, PropertyOptionDTO, UsageDTO } from '@shared/api';
+import { errorMessage, getJSON, sendJSON } from '../../lib/api';
 import { newId } from '../../lib/format';
 import { invalidateWrites } from '../../lib/queryClient';
 import { useRouter } from '../../lib/router';
 import { ManageTree, type ManageNode } from '../manage/ManageTree';
+import { NO_USAGE, scopeText, UNDO_HINT, usage } from '../manage/usage';
 import { useUndoToast } from '../manage/useUndoToast';
 import { Popover, PopoverContent, PopoverTrigger } from '../Menu';
 import { Dialog, useConfirm, useToast } from '../ui';
@@ -85,8 +87,14 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
   const [importing, setImporting] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeDialog, setMergeDialog] = useState<PropertyOptionDTO[] | null>(null);
+  // 每个选项（含子树）的使用次数；属性数据先到时先不显示
+  const counts = useQuery({ queryKey: ['manage', 'option-usage', def.id], queryFn: () => getJSON<Record<string, UsageDTO>>(`/api/properties/${def.id}/usage`) });
+  const usageOf = (id: string) => counts.data?.[id] ?? NO_USAGE;
   const byId = useMemo(() => new Map(def.options.map((o) => [o.id, o])), [def.options]);
-  const nodes: OptionNode[] = useMemo(() => def.options.map((o) => ({ id: o.id, parentId: o.parentId, label: o.label, option: o })), [def.options]);
+  const nodes: OptionNode[] = useMemo(
+    () => def.options.map((o) => ({ id: o.id, parentId: o.parentId, label: o.label, hint: counts.data ? usage(counts.data[o.id] ?? NO_USAGE) : undefined, option: o })),
+    [def.options, counts.data],
+  );
   const selectedOptions = selected.map((id) => byId.get(id)).filter((o): o is PropertyOptionDTO => Boolean(o));
   const current = selectedOptions.length === 1 ? selectedOptions[0] : undefined;
 
@@ -123,7 +131,14 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     const kids = def.options.filter((o) => xs.some((x) => o.path.startsWith(`${x.path}/`))).length;
     const ok = await confirm({
       title: xs.length === 1 ? `删除“${xs[0]!.path}”` : `删除 ${xs.length} 个选项`,
-      message: `${xs.length > 1 ? `${xs.map((x) => `“${x.path}”`).slice(0, 5).join('、')}${xs.length > 5 ? ' 等' : ''}，` : ''}${kids ? `连同 ${kids} 个下级选项一起删除，` : ''}并从使用它们的题目与资料上移除这个${def.name}。题目和资料本身不受影响。`,
+      message: (() => {
+        const scope = scopeText(xs.map((x) => usageOf(x.id)));
+        const them = xs.length > 1 || kids ? '它们' : '它';
+        const list = xs.length > 1 ? `${xs.map((x) => `“${x.path}”`).slice(0, 5).join('、')}${xs.length > 5 ? ' 等' : ''}` : '';
+        const what = kids ? `${list}连同 ${kids} 个下级选项一起删除。` : list ? `${list}一起删除。` : '';
+        const effect = scope ? `用到${them}的 ${scope}会去掉这个${def.name}，题目和资料本身不受影响。` : `目前没有题目或资料用到${them}。`;
+        return `${what}${effect}${UNDO_HINT}`;
+      })(),
       confirmLabel: xs.length === 1 ? '删除' : `删除 ${xs.length} 个选项`,
       danger: true,
     });
@@ -146,7 +161,10 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     if (!into || xs.length === 0) return;
     const ok = await confirm({
       title: xs.length === 1 ? `把“${xs[0]!.path}”合并到“${into.path}”` : `把 ${xs.length} 个选项合并到“${into.path}”`,
-      message: '使用前者的题目与资料改为使用后者，前者的下级移到后者下面（同名的继续合并），然后删除前者。',
+      message: (() => {
+        const scope = scopeText(xs.map((x) => usageOf(x.id)));
+        return `${scope ? `用到前者的 ${scope}改为使用后者；` : ''}前者的下级移到后者下面（同名的继续合并），然后删除前者。${UNDO_HINT}`;
+      })(),
       confirmLabel: '合并',
     });
     if (!ok) return;

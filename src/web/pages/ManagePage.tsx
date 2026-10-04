@@ -198,6 +198,7 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
       <div className="card-flat px-2 py-2">
         <ManageTree<DictNode>
           label={`${label}列表`}
+          filterPlaceholder={entries.length > 12 ? `过滤${label}` : undefined}
           nodes={nodes}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}
@@ -394,6 +395,7 @@ function TagsTab({ data }: { data: TagManageDTO }) {
       <div className="card-flat max-h-[70vh] overflow-y-auto px-2 py-2">
         <ManageTree<TagNode>
           label="标签树"
+          filterPlaceholder="过滤标签，例如“方法/换元”"
           nodes={nodes}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}

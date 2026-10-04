@@ -246,6 +246,7 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
       <div className="card-flat max-h-[60vh] overflow-y-auto px-2 py-2">
         <ManageTree<OptionNode>
           label={`${def.name}选项树`}
+          filterPlaceholder={def.nested ? `过滤${def.name}，例如“函数/单调”` : `过滤${def.name}`}
           nodes={nodes}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}

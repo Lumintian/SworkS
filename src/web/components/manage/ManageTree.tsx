@@ -3,11 +3,14 @@
  * - 选择：单击只选这一项、⌘/Ctrl+单击切换、⇧+单击连选（⌘⇧ 追加）、⌘/Ctrl+A 全选、Esc 取消；⇧+方向键扩展选择。
  * - 右键或每行的“⋯”按钮打开菜单，作用于整个选择（右键未选中的项时先只选它，与访达一致）。
  * - F2 或双击改名；Delete / Backspace 删除所选；可拖动所选项移动（由调用方决定能否改变上级、能否调整顺序）。
+ * - 可选的过滤框：按完整路径匹配（与检索相同的规范化：全角半角、大小写、空白），只显示匹配项及其上级并全部展开；
+ *   过滤时 ⌘/Ctrl+A 只选匹配项，不能拖动（看不到的同级项会让位置算错）。
  */
 import { dragAndDropFeature, hotkeysCoreFeature, selectionFeature, syncDataLoaderFeature, type DragTarget, type ItemInstance, type Updater } from '@headless-tree/core';
 import { useTree } from '@headless-tree/react';
-import { ChevronRight, MoreHorizontal } from 'lucide-react';
+import { ChevronRight, MoreHorizontal, Search, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { normText } from '@shared/query/normalize';
 import {
   ContextContent,
   ContextItem,
@@ -106,6 +109,7 @@ export function ManageTree<N extends ManageNode>({
   renamingId: renamingIdProp,
   onRenamingIdChange,
   emptyText,
+  filterPlaceholder,
 }: {
   /** 树的无障碍名称，例如“标签树” */
   label: string;
@@ -125,21 +129,43 @@ export function ManageTree<N extends ManageNode>({
   renamingId?: string | null | undefined;
   onRenamingIdChange?: ((id: string | null) => void) | undefined;
   emptyText?: ReactNode;
+  /** 提供时在树上方显示过滤框 */
+  filterPlaceholder?: string | undefined;
 }) {
-  const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const [query, setQuery] = useState('');
+  const q = normText(query);
+  /** 过滤：匹配完整路径的项，以及为了显示它们而保留的上级 */
+  const filter = useMemo(() => {
+    if (!q) return null;
+    const all = new Map(nodes.map((n) => [n.id, n]));
+    const pathOf = (n: N) => {
+      const segs = [n.label];
+      for (let p = n.parentId ? all.get(n.parentId) : undefined; p; p = p.parentId ? all.get(p.parentId) : undefined) segs.unshift(p.label);
+      return segs.join('/');
+    };
+    const matches = new Set(nodes.filter((n) => normText(pathOf(n)).includes(q)).map((n) => n.id));
+    const keep = new Set<string>();
+    for (const id of matches) for (let x: string | null | undefined = id; x && !keep.has(x); x = all.get(x)?.parentId) keep.add(x);
+    return { matches, keep };
+  }, [nodes, q]);
+  const shown = useMemo(() => (filter ? nodes.filter((n) => filter.keep.has(n.id)) : nodes), [nodes, filter]);
+  const byId = useMemo(() => new Map(shown.map((n) => [n.id, n])), [shown]);
   const childrenOf = useMemo(() => {
     const m = new Map<string, string[]>();
-    for (const n of nodes) {
+    for (const n of shown) {
       const k = n.parentId ?? ROOT;
       m.set(k, [...(m.get(k) ?? []), n.id]);
     }
     return m;
-  }, [nodes]);
-  const folders = useMemo(() => nodes.filter((n) => childrenOf.has(n.id)).map((n) => n.id), [nodes, childrenOf]);
-  // 默认展开时记录“折叠了哪些”，新出现的上级自动展开；否则记录“展开了哪些”
+  }, [shown]);
+  const folders = useMemo(() => shown.filter((n) => childrenOf.has(n.id)).map((n) => n.id), [shown, childrenOf]);
+  // 默认展开时记录“折叠了哪些”，新出现的上级自动展开；否则记录“展开了哪些”。过滤时另记一份（全部展开起步），清空过滤即恢复原来的展开状态
   const [toggled, setToggled] = useState<string[]>([]);
+  const [filterCollapsed, setFilterCollapsed] = useState<string[]>([]);
+  const allExpanded = Boolean(filter) || expandAll;
+  const collapsedNow = filter ? filterCollapsed : toggled;
   // headless-tree 在渲染中比较 state 的引用，引用一变就同步 setState；内容相同时必须沿用同一个数组，否则会无限重渲染
-  const expandedItems = useStableArray(expandAll ? folders.filter((id) => !toggled.includes(id)) : toggled);
+  const expandedItems = useStableArray(allExpanded ? folders.filter((id) => !collapsedNow.includes(id)) : toggled);
   const liveSelected = useStableArray(selectedIds.filter((id) => byId.has(id)));
   const [renamingIdState, setRenamingIdState] = useState<string | null>(null);
   const renamingId = renamingIdProp !== undefined ? renamingIdProp : renamingIdState;
@@ -151,7 +177,8 @@ export function ManageTree<N extends ManageNode>({
 
   const setExpanded = (u: Updater<string[]>) => {
     const next = typeof u === 'function' ? u(expandedItems) : u;
-    setToggled(expandAll ? folders.filter((id) => !next.includes(id)) : next);
+    if (filter) setFilterCollapsed(folders.filter((id) => !next.includes(id)));
+    else setToggled(expandAll ? folders.filter((id) => !next.includes(id)) : next);
   };
   const setSelected = (u: Updater<string[]>) => {
     const next = typeof u === 'function' ? u(liveSelected) : u;
@@ -169,10 +196,10 @@ export function ManageTree<N extends ManageNode>({
       getItem: (id) => (id === ROOT ? { id: ROOT, parentId: null, label } : (byId.get(id) ?? { id: ROOT, parentId: null, label: '' })),
       getChildren: (id) => childrenOf.get(id) ?? [],
     },
-    canReorder: drag?.canReorder ?? false,
-    canDrag: () => Boolean(drag),
+    canReorder: (drag?.canReorder ?? false) && !filter,
+    canDrag: () => Boolean(drag) && !filter,
     canDrop: (items, target) => {
-      if (!drag) return false;
+      if (!drag || filter) return false;
       const tid = target.item.getId();
       if (items.some((i) => i.getId() === tid)) return false;
       if ('childIndex' in target) return drag.canReorder && (tid === ROOT || drag.canReparent);
@@ -196,13 +223,13 @@ export function ManageTree<N extends ManageNode>({
 
   useEffect(() => {
     tree.rebuildTree();
-  }, [tree, nodes, childrenOf]);
+  }, [tree, shown, childrenOf]);
 
   const visibleIds = () =>
     tree
       .getItems()
       .map((i) => i.getId())
-      .filter((id) => id !== ROOT);
+      .filter((id) => id !== ROOT && (!filter || filter.matches.has(id)));
 
   const onRowClick = (item: ItemInstance<N | RootNode>, e: MouseEvent) => {
     const id = item.getId();
@@ -279,6 +306,36 @@ export function ManageTree<N extends ManageNode>({
 
   return (
     <div onKeyDown={onKeyDown}>
+      {filterPlaceholder && nodes.length > 0 ? (
+        <div className="sticky top-0 z-10 -mx-2 -mt-2 mb-1 flex items-center gap-2 bg-surface px-2 pb-1.5 pt-2">
+          <span className="relative min-w-0 flex-1">
+            <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
+            <input
+              className="input py-1 pl-8 pr-7"
+              value={query}
+              placeholder={filterPlaceholder}
+              aria-label={`过滤${label}`}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setFilterCollapsed([]);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape' && query) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setQuery('');
+                }
+              }}
+            />
+            {query ? (
+              <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink" aria-label="清空过滤" onClick={() => setQuery('')}>
+                <X size={14} />
+              </button>
+            ) : null}
+          </span>
+          {filter ? <span className="flex-none text-xs text-ink-faint">{filter.matches.size ? `${filter.matches.size} 项` : '没有匹配项'}</span> : null}
+        </div>
+      ) : null}
       {nodes.length === 0 && emptyText ? <p className="px-2 py-4 text-center text-sm text-ink-faint">{emptyText}</p> : null}
       <div {...tree.getContainerProps(label)} aria-multiselectable="true" className="outline-none">
         {tree.getItems().map((item) => {
@@ -328,7 +385,7 @@ export function ManageTree<N extends ManageNode>({
                     />
                   ) : (
                     <>
-                      <span className={`truncate ${n.muted ? 'text-ink-faint' : ''}`}>{n.label}</span>
+                      <span className={`truncate ${n.muted || (filter && !filter.matches.has(id)) ? 'text-ink-faint' : ''}`}>{n.label}</span>
                       {n.hint ? <span className="ml-2 truncate text-xs font-normal text-ink-faint">{n.hint}</span> : null}
                       <span className="flex-1" />
                       <DropdownMenu onOpenChange={(open) => open && ensureSelected(id)}>

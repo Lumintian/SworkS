@@ -17,6 +17,12 @@ export function invalidateWrites(e: WriteEvent = {}): void {
   broadcastWrite(e);
 }
 
+/**
+ * 只改了目录、没有改任何题目/资料内容的写入（字典候选、新建属性、属性改名、选项的新建/改名/移动…）：
+ * 列表与目录照样重新获取，其他标签页里开着的编辑页不必逐个重新读取。
+ */
+export const CATALOG_ONLY: WriteEvent = { problems: [], materials: [] };
+
 const KEYS = ['list', 'nav', 'catalog', 'manage', 'students', 'attempts', 'entity'];
 let timer: ReturnType<typeof setTimeout> | null = null;
 

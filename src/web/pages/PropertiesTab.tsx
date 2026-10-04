@@ -11,7 +11,7 @@ import { OptionTreeEditor } from '../components/props/OptionTreeEditor';
 import { useConfirm, useToast } from '../components/ui';
 import { errorMessage, sendJSON } from '../lib/api';
 import { newId } from '../lib/format';
-import { invalidateWrites } from '../lib/queryClient';
+import { CATALOG_ONLY, invalidateWrites } from '../lib/queryClient';
 
 const PRESET_HINT: Record<string, string> = {
   qtype: '预置，可分层，可按它排序',
@@ -41,7 +41,7 @@ function CreateForm({ onCreated }: { onCreated: (d: PropertyDefDTO) => void }) {
             appliesProblem: problem,
             appliesMaterial: material,
           });
-          invalidateWrites();
+          invalidateWrites(CATALOG_ONLY);
           toast(`已新建属性“${d.name}”`, 'success');
           setName('');
           onCreated(d);

@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, UsageDTO } from '@shared/api';
 import { errorMessage, getJSON, sendJSON } from '../../lib/api';
 import { newId } from '../../lib/format';
-import { invalidateWrites } from '../../lib/queryClient';
+import { CATALOG_ONLY, invalidateWrites } from '../../lib/queryClient';
 import { useRouter } from '../../lib/router';
 import { DuplicateHint, findDuplicates } from '../manage/DuplicateHint';
 import { ManageTree, type ManageNode } from '../manage/ManageTree';
@@ -53,7 +53,7 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
             onClick={async () => {
               try {
                 const r = await sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: text });
-                invalidateWrites();
+                invalidateWrites(CATALOG_ONLY);
                 toast(`已新建 ${r.created} 个选项，${r.existing} 个已存在`, 'success');
                 setText('');
                 onClose();
@@ -140,10 +140,11 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
   const selectedOptions = selected.map((id) => byId.get(id)).filter((o): o is PropertyOptionDTO => Boolean(o));
   const current = selectedOptions.length === 1 ? selectedOptions[0] : undefined;
 
+  /** 新建、改名、移动选项：取值按 ID 保存，题目内容不变 */
   const call = async (fn: () => Promise<unknown>, ok?: string) => {
     try {
       await fn();
-      invalidateWrites();
+      invalidateWrites(CATALOG_ONLY);
       if (ok) toast(ok, 'success');
       return true;
     } catch (err) {

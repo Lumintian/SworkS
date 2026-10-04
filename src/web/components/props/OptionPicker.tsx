@@ -7,7 +7,7 @@ import { Check, Plus } from 'lucide-react';
 import { useState } from 'react';
 import type { PropertyDefDTO } from '@shared/api';
 import { errorMessage, sendJSON } from '../../lib/api';
-import { invalidateWrites } from '../../lib/queryClient';
+import { CATALOG_ONLY, invalidateWrites } from '../../lib/queryClient';
 import { useToast } from '../ui';
 
 export function OptionPicker({
@@ -42,7 +42,7 @@ export function OptionPicker({
   const create = async () => {
     try {
       const r = await sendJSON<{ optionId: string }>('POST', `/api/properties/${def.id}/options/ensure-path`, { path: typed });
-      invalidateWrites();
+      invalidateWrites(CATALOG_ONLY);
       setQ('');
       onPick(r.optionId);
     } catch (err) {

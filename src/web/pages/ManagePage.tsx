@@ -14,7 +14,7 @@ import { NO_USAGE, scopeText, sumUsage, UNDO_HINT, usage, used } from '../compon
 import { useUndoToast } from '../components/manage/useUndoToast';
 import { Dialog, ErrorBox, PageHeader, Spinner, useConfirm, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
-import { invalidateWrites } from '../lib/queryClient';
+import { CATALOG_ONLY, invalidateWrites } from '../lib/queryClient';
 import { useRouter } from '../lib/router';
 import { PropertiesTab } from './PropertiesTab';
 
@@ -113,10 +113,11 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
   );
   const duplicates = useMemo(() => findDuplicates(nodes), [nodes]);
 
+  /** 只动候选（添加、排序、移出）：不改题目内容 */
   const call = async (fn: () => Promise<unknown>, ok: string) => {
     try {
       await fn();
-      invalidateWrites();
+      invalidateWrites(CATALOG_ONLY);
       toast(ok, 'success');
       return true;
     } catch (err) {

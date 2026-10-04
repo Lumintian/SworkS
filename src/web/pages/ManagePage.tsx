@@ -9,6 +9,7 @@ import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDT
 import { buildTagTree, flattenTagTree, inSubtree, splitTagPath, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
 import { DuplicateHint, findDuplicates } from '../components/manage/DuplicateHint';
+import { ManageHelp, treeTips } from '../components/manage/ManageHelp';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
 import { NO_USAGE, scopeText, sumUsage, UNDO_HINT, usage, used } from '../components/manage/usage';
 import { useUndoToast } from '../components/manage/useUndoToast';
@@ -183,9 +184,16 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-ink-soft">
-        候选按这里的顺序出现在编辑页与导航中，拖动即可调整。单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；F2 改名，Delete 清除所选。改名与合并会同时改写题目和资料上的取值。
-      </p>
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-sm text-ink-soft">编辑页里{label}候选的顺序与这里一致。改名、合并会同时改写题目和资料上的取值。</p>
+        <ManageHelp
+          title={`${label}列表`}
+          tips={[
+            ...treeTips({ drag: '拖动调整候选顺序；把灰色的值（题目上用过、但不在候选里）拖进来即加入候选', del: 'Delete：没人用的值移出候选，有人用的从题目和资料上清除' }),
+            '改名为已有的值，两者合并为一个',
+          ]}
+        />
+      </div>
       <form
         className="flex max-w-md gap-2"
         onSubmit={(e) => {
@@ -419,9 +427,19 @@ function TagsTab({ data }: { data: TagManageDTO }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-ink-soft">
-        标签用 <code className="rounded bg-sunken px-1">/</code> 分层，例如“方法/换元”。单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；F2 改名（写完整路径即可移动），把标签拖到另一个标签上即移到它下面，Delete 删除所选。新名称与已有标签相同时会合并。
-      </p>
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-sm text-ink-soft">
+          标签用 <code className="rounded bg-sunken px-1">/</code> 分层，例如“方法/换元”。改名、移动、删除会同时改写题目和资料上的标签。
+        </p>
+        <ManageHelp
+          title="标签树"
+          tips={[
+            ...treeTips({ drag: '把标签拖到另一个标签上，即移到它下面（连同下级）' }),
+            '改名时写完整路径即可移到别的上级下，例如把“换元”改成“方法/换元”',
+            '新名称与已有标签相同时，两者合并为一个',
+          ]}
+        />
+      </div>
       {unused.length ? (
         <div className="flex flex-wrap items-center gap-2 border border-line bg-sunken px-3 py-2 text-sm text-ink-soft" style={{ borderRadius: 'var(--radius-organic-sm)' }}>
           <span className="flex-1">{unused.length} 个标签没有挂在任何题目或资料上（显示为“未使用”）。</span>
@@ -490,8 +508,12 @@ function TagsTab({ data }: { data: TagManageDTO }) {
 
 export function ManagePage() {
   const { search, navigate, path } = useRouter();
-  const raw = new URLSearchParams(search).get('tab');
+  const params = new URLSearchParams(search);
+  // ?item= 来自左侧栏标题的右键菜单：tags / subject / stage，或某个属性的 ID
+  const item = params.get('item');
+  const raw = item && TABS.some((t) => t.id === item) ? item : params.get('tab');
   const tab: Tab = TABS.some((t) => t.id === raw) ? (raw as Tab) : 'properties';
+  const propertyId = item && !TABS.some((t) => t.id === item) ? item : undefined;
   // 只请求当前页签的数据
   const dict = useQuery({ queryKey: ['manage', 'dict'], queryFn: () => getJSON<DictManageDTO>('/api/dict/manage'), enabled: tab === 'subject' || tab === 'stage' });
   const tags = useQuery({ queryKey: ['manage', 'tags'], queryFn: () => getJSON<TagManageDTO>('/api/tags/manage'), enabled: tab === 'tags' });
@@ -499,7 +521,7 @@ export function ManagePage() {
   const q = tab === 'tags' ? tags : tab === 'properties' ? props : dict;
   return (
     <div>
-      <PageHeader title="数据管理" subtitle="管理自定义属性与考点树、学科、学段与标签：改名、合并、排序与删除。改动题目内容的操作会记录到对应题目与资料的修改时间。" />
+      <PageHeader title="数据管理" subtitle="整理题目和资料的分类：属性与考点树、学科、学段和标签。" />
       <div className="segmented mb-4" role="tablist" aria-label="数据类别">
         {TABS.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} aria-pressed={tab === t.id} onClick={() => navigate(`${path}?tab=${t.id}`, { replace: true })}>
@@ -509,7 +531,7 @@ export function ManagePage() {
       </div>
       {q.isPending ? <Spinner /> : null}
       {q.isError ? <ErrorBox message={errorMessage(q.error)} onRetry={() => void q.refetch()} /> : null}
-      {tab === 'properties' && props.data ? <PropertiesTab defs={props.data} /> : null}
+      {tab === 'properties' && props.data ? <PropertiesTab key={propertyId} defs={props.data} initialSelected={propertyId} /> : null}
       {tab === 'tags' && tags.data ? <TagsTab data={tags.data} /> : null}
       {(tab === 'subject' || tab === 'stage') && dict.data ? <DictTab kind={tab} entries={dict.data[tab]} /> : null}
     </div>

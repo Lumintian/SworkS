@@ -167,6 +167,21 @@ export function ManageTree<N extends ManageNode>({
   // headless-tree 在渲染中比较 state 的引用，引用一变就同步 setState；内容相同时必须沿用同一个数组，否则会无限重渲染
   const expandedItems = useStableArray(allExpanded ? folders.filter((id) => !collapsedNow.includes(id)) : toggled);
   const liveSelected = useStableArray(selectedIds.filter((id) => byId.has(id)));
+  // 新选中的项（例如刚新建的下级、合并的目标）藏在折叠的上级里时，展开它的上级；每项只展开一次，之后用户可以再折叠
+  const revealed = useRef(new Set<string>());
+  useEffect(() => {
+    const hidden: string[] = [];
+    for (const id of liveSelected) {
+      if (revealed.current.has(id)) continue;
+      revealed.current.add(id);
+      for (let p = byId.get(id)?.parentId; p; p = byId.get(p)?.parentId) if (!expandedItems.includes(p)) hidden.push(p);
+    }
+    for (const id of revealed.current) if (!liveSelected.includes(id)) revealed.current.delete(id);
+    if (hidden.length === 0) return;
+    if (filter) setFilterCollapsed((xs) => xs.filter((x) => !hidden.includes(x)));
+    else if (expandAll) setToggled((xs) => xs.filter((x) => !hidden.includes(x)));
+    else setToggled((xs) => [...new Set([...xs, ...hidden])]);
+  }, [liveSelected, byId, expandedItems, filter, expandAll]);
   const [renamingIdState, setRenamingIdState] = useState<string | null>(null);
   const renamingId = renamingIdProp !== undefined ? renamingIdProp : renamingIdState;
   const setRenamingId = (id: string | null) => {

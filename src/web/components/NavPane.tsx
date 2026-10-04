@@ -9,6 +9,7 @@ import {
   Archive,
   BookOpen,
   ChevronRight,
+  EyeOff,
   FilePlus2,
   Inbox,
   Info,
@@ -24,7 +25,7 @@ import type { BatchAction, NavDTO, PropertyDefDTO } from '@shared/api';
 import { EMPTY_FILTERS, NONE_VALUE, parseListFilters, TRUE_VALUE, type ListFilters } from '@shared/listFilters';
 import { appendCondition, fieldText, navSelection, removeRows, rowsOf, setFieldCondition, type Q } from '@shared/query';
 import { buildTagTree, tagKey, type TagTreeNode } from '@shared/tagPath';
-import { errorMessage, loadSession } from '../lib/api';
+import { errorMessage, loadSession, sendJSON } from '../lib/api';
 import { runBatch } from '../lib/batch';
 import { daysSince, newId } from '../lib/format';
 import { MOD_LABEL } from '../lib/hotkeys';
@@ -32,6 +33,8 @@ import { collectionOfPath, listParams, listPathOf, useNav, useStudents, type Col
 import { Link, useRouter } from '../lib/router';
 import { propCondition, tagCondition, useQueryContext } from '../lib/queryText';
 import { propertiesFor } from '../lib/useCatalog';
+import { CATALOG_ONLY, invalidateWrites } from '../lib/queryClient';
+import { ContextContent, ContextItem, ContextMenu, ContextTrigger } from './Menu';
 import { NavTree, type NavNode } from './NavTree';
 import { SavedSearchesNav } from './search/SavedSearchesNav';
 import { useToast } from './ui';
@@ -69,17 +72,27 @@ function useCollapsed(key: string): [boolean, () => void] {
   ];
 }
 
-function Section({ id, title, children, action }: { id: string; title: string; children: ReactNode; action?: ReactNode }) {
+function Section({ id, title, children, action, menu }: { id: string; title: string; children: ReactNode; action?: ReactNode; menu?: ReactNode }) {
   const [collapsed, toggle] = useCollapsed(`sworks.nav.section.${id}`);
+  const heading = (
+    <div className="flex items-center">
+      <button type="button" className="nav-section-title" aria-expanded={!collapsed} onClick={toggle}>
+        <ChevronRight size={12} className={`transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+        {title}
+      </button>
+      {action}
+    </div>
+  );
   return (
     <section className="space-y-0.5">
-      <div className="flex items-center">
-        <button type="button" className="nav-section-title" aria-expanded={!collapsed} onClick={toggle}>
-          <ChevronRight size={12} className={`transition-transform ${collapsed ? '' : 'rotate-90'}`} />
-          {title}
-        </button>
-        {action}
-      </div>
+      {menu ? (
+        <ContextMenu>
+          <ContextTrigger asChild>{heading}</ContextTrigger>
+          <ContextContent>{menu}</ContextContent>
+        </ContextMenu>
+      ) : (
+        heading
+      )}
       {collapsed ? null : children}
     </section>
   );
@@ -246,6 +259,25 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
 
   const noun = collection === 'problems' ? '题目' : '资料';
 
+  /** 属性标题的右键菜单：不在左侧栏列出（提示里可撤销）、到数据管理里编辑 */
+  const hideProperty = async (def: PropertyDefDTO) => {
+    const set = (showInNav: boolean) => sendJSON('PUT', `/api/properties/${def.id}`, { showInNav }).then(() => invalidateWrites(CATALOG_ONLY));
+    try {
+      await set(false);
+      toast(`左侧栏不再列出“${def.name}”，可以在数据管理里重新打开`, 'success', {
+        label: '撤销',
+        onClick: () => void set(true).catch((err: unknown) => toast(errorMessage(err), 'error')),
+      });
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+  const manageItem = (item: string, label: string) => (
+    <ContextItem onSelect={() => navigate(`/manage?item=${encodeURIComponent(item)}`)}>
+      <SlidersHorizontal size={13} /> {label}
+    </ContextItem>
+  );
+
   return (
     <aside className="flex flex-col gap-4 border-b border-line px-3 py-4 md:sticky md:top-0 md:h-screen md:overflow-y-auto md:border-b-0 md:border-r md:py-5" aria-label="导航">
       <Link to="/problems" className="flex items-baseline gap-2 px-2">
@@ -319,7 +351,7 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
       ) : null}
 
       <div className="hidden space-y-3 md:block">
-        <Section id="tags" title={`${noun}标签`}>
+        <Section id="tags" title={`${noun}标签`} menu={manageItem('tags', '在数据管理中整理标签')}>
           {tagTree.length ? (
             <NavTree label={`${noun}标签树`} nodes={tagTree} storageKey={`sworks.nav.tags.${collection}`} onSelect={onTag} onDropItems={(n, ids) => void dropOnTag(n, ids)} />
           ) : (
@@ -339,7 +371,19 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
         {navDefs.map((def) => {
           const nodes = propertyNodes(def, data, [...(sel.props.get(def.id) ?? [])]);
           return nodes.length ? (
-            <Section key={def.id} id={`prop-${def.id}`} title={def.name}>
+            <Section
+              key={def.id}
+              id={`prop-${def.id}`}
+              title={def.name}
+              menu={
+                <>
+                  <ContextItem onSelect={() => void hideProperty(def)}>
+                    <EyeOff size={13} /> 不在左侧栏列出
+                  </ContextItem>
+                  {manageItem(def.id, `在数据管理中编辑“${def.name}”`)}
+                </>
+              }
+            >
               <NavTree
                 label={`${def.name}筛选树`}
                 nodes={nodes}
@@ -351,12 +395,12 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
           ) : null;
         })}
         {valueNodes('subject').length ? (
-          <Section id="subjects" title="按学科">
+          <Section id="subjects" title="按学科" menu={manageItem('subject', '在数据管理中整理学科')}>
             <NavTree label="学科筛选树" nodes={valueNodes('subject')} storageKey="sworks.nav.subjects" onSelect={onValue('subject')} />
           </Section>
         ) : null}
         {valueNodes('stage').length ? (
-          <Section id="stages" title="按学段">
+          <Section id="stages" title="按学段" menu={manageItem('stage', '在数据管理中整理学段')}>
             <NavTree label="学段筛选树" nodes={valueNodes('stage')} storageKey="sworks.nav.stages" onSelect={onValue('stage')} />
           </Section>
         ) : null}

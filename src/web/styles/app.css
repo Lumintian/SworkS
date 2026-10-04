@@ -278,6 +278,10 @@
     color: var(--color-stone-dark);
     text-decoration-color: var(--color-stone);
   }
+  .link-btn:disabled {
+    color: var(--color-ink-faint);
+    text-decoration-color: var(--color-line-strong);
+  }
 
   .nav-item {
     display: flex;

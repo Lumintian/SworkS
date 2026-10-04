@@ -406,6 +406,27 @@ function ownersOfProperty(db: DB, propertyId: string): Owner[] {
 export type { Toucher } from './touch.js';
 
 /**
+ * 数据管理：每个属性有多少对象设置了取值（不论是否归档、是否适用），回收站中的对象单独计数。
+ */
+export function propertyUsage(db: DB): Record<string, UsageDTO> {
+  const rows = db
+    .prepare(
+      `SELECT v.property_id, v.problem_id IS NOT NULL AS is_problem, COALESCE(p.deleted_at, m.deleted_at) IS NOT NULL AS trashed, COUNT(DISTINCT COALESCE(v.problem_id, v.material_id)) AS n
+       FROM property_values v LEFT JOIN problems p ON p.id = v.problem_id LEFT JOIN materials m ON m.id = v.material_id
+       GROUP BY v.property_id, is_problem, trashed`,
+    )
+    .all() as { property_id: string; is_problem: number; trashed: number; n: number }[];
+  const out: Record<string, UsageDTO> = {};
+  for (const r of rows) {
+    const u = (out[r.property_id] ??= { problems: 0, materials: 0, trashed: 0 });
+    if (r.trashed) u.trashed += r.n;
+    else if (r.is_problem) u.problems += r.n;
+    else u.materials += r.n;
+  }
+  return out;
+}
+
+/**
  * 数据管理：每个选项（含子树）下不重复的对象数，回收站中的对象单独计数。
  * 冻结的取值（属性不再适用于这类对象）也算在内：删除、合并选项同样作用于它们。
  */
@@ -817,14 +838,22 @@ const DRY_RUN = Symbol('dry-run');
 
 /**
  * 从大纲导入选项：每行一个，缩进或 Markdown 列表（- / * / + / 1.）表示层级，# 标题按级别表示层级。
- * 已存在的同名选项直接沿用。dryRun 时照常执行再整体回滚，返回每一行会落到的位置（供预览）。
+ * 已存在的同名选项直接沿用。nest 为真时先把属性改为分层（保留大纲的层级）。
+ * dryRun 时照常执行再整体回滚，返回每一行会落到的位置（供预览）。
  */
-export function importOutline(db: DB, propertyId: string, outline: string, opts: { dryRun?: boolean | undefined } = {}): OutlineImportResultDTO {
+export function importOutline(
+  db: DB,
+  propertyId: string,
+  outline: string,
+  opts: { dryRun?: boolean | undefined; nest?: boolean | undefined } = {},
+): OutlineImportResultDTO {
   let result: OutlineImportResultDTO | undefined;
   try {
     db.transaction(() => {
       recordCatalog(db, 'properties');
-      result = importOutlineTx(db, requireOptionDef(db, propertyId), outline, Boolean(opts.dryRun));
+      const d = requireOptionDef(db, propertyId);
+      if (opts.nest && !d.nested) db.prepare('UPDATE property_defs SET nested = 1, updated_at = ? WHERE id = ?').run(nowIso(), d.id);
+      result = importOutlineTx(db, getDef(db, d.id), outline, Boolean(opts.dryRun));
       if (opts.dryRun) throw DRY_RUN;
     })();
   } catch (err) {

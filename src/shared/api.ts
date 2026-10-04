@@ -256,6 +256,8 @@ export const outlineImportSchema = z
     outline: z.string().min(1).max(200_000),
     /** 试运行：不写入，返回每一行会落到的位置（预览） */
     dryRun: z.boolean().optional(),
+    /** 先把属性改为分层，保留大纲的层级（不分层的属性默认把层级展平） */
+    nest: z.boolean().optional(),
   })
   .strict();
 

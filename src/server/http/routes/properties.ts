@@ -23,6 +23,7 @@ import {
   listPropertyDefs,
   mergeOption,
   optionUsage,
+  propertyUsage,
   mergeOptions,
   moveOption,
   moveOptions,
@@ -38,6 +39,7 @@ export const register: RegisterRoutes = (app, ctx) => {
   const { db } = ctx;
   app.get('/api/properties', (c) => c.json(listPropertyDefs(db, { includeArchived: c.req.query('all') === '1' })));
   app.post('/api/properties', async (c) => c.json(createPropertyDef(db, await body(c, propertyCreateSchema)), 201));
+  app.get('/api/properties/usage', (c) => c.json(propertyUsage(db)));
   app.post('/api/properties/reorder', async (c) => {
     reorderPropertyDefs(db, (await body(c, idListSchema)).ids);
     return c.json(listPropertyDefs(db, { includeArchived: true }));
@@ -62,7 +64,7 @@ export const register: RegisterRoutes = (app, ctx) => {
   });
   app.post('/api/properties/:id/import', async (c) => {
     const input = await body(c, outlineImportSchema);
-    return c.json(importOutline(db, uuidParam(c), input.outline, { dryRun: input.dryRun }));
+    return c.json(importOutline(db, uuidParam(c), input.outline, { dryRun: input.dryRun, nest: input.nest }));
   });
 
   // 多选的批量操作（静态路径，先于 /:id 注册）

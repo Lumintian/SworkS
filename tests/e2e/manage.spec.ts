@@ -172,3 +172,35 @@ test('学科：只差全角半角的值提示合并；只有回收站里在用�
   await expect(page.getByText(/已清除，影响 1 项/)).toBeVisible();
   await expect(item).toHaveCount(0);
 });
+
+test('属性：第一次建下级时说明“分层”的后果；左侧栏标题右键可以不再列出', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const defs = (await apiGet(server, '/api/properties')) as { id: string; preset: string; name: string; nested: boolean; options: { id: string; path: string }[] }[];
+  const diff = defs.find((d) => d.preset === 'difficulty')!;
+  expect(diff.nested).toBe(false);
+  // 左侧栏只列出有题目在用的属性
+  await seed(server, '一道题', { properties: [{ propertyId: diff.id, optionIds: [diff.options.find((o) => o.path === '中档')!.id] }] });
+
+  await page.goto(`${server.url}/manage?item=${diff.id}`);
+  const tree = page.getByRole('tree', { name: `${diff.name}选项树` });
+  await tree.getByRole('treeitem', { name: '较难', exact: true }).click();
+  await page.getByRole('button', { name: '新建下级' }).click();
+  await expect(page.getByRole('heading', { name: `让“${diff.name}”的选项可以有下级` })).toBeVisible();
+  await page.getByTestId('confirm-ok').click();
+  await page.getByLabel('新选项名称').fill('压轴');
+  await page.getByLabel('新选项名称').press('Enter');
+  await expect(tree.getByRole('treeitem', { name: '压轴', exact: true })).toBeVisible();
+  const after = (await apiGet(server, `/api/properties/${diff.id}`)) as { nested: boolean; options: { path: string }[] };
+  expect(after.nested).toBe(true);
+  expect(after.options.map((o) => o.path)).toContain('较难/压轴');
+  await expect(page.getByRole('button', { name: '改为不分层' })).toBeDisabled();
+
+  // 左侧栏：属性标题右键 → 不在左侧栏列出（提示里可撤销）
+  await page.goto(`${server.url}/problems`);
+  await page.getByRole('button', { name: diff.name, exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '不在左侧栏列出' }).click();
+  await expect(page.getByText(`左侧栏不再列出“${diff.name}”`)).toBeVisible();
+  expect(((await apiGet(server, `/api/properties/${diff.id}`)) as { showInNav: boolean }).showInNav).toBe(false);
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect.poll(async () => ((await apiGet(server!, `/api/properties/${diff.id}`)) as { showInNav: boolean }).showInNav).toBe(true);
+});

@@ -1,6 +1,7 @@
 /**
  * 选项树编辑（基于 ManageTree / headless-tree）：多选、右键菜单、拖动排序与改变上级、F2 或双击改名、Delete 删除；
  * 工具栏新建同级/下级、删除（含子树）、合并到其他选项、导入大纲（带预览）、复制为大纲（可粘贴到别的库或属性里导入）。
+ * “分层”不单独让用户勾选：第一次建下级（新建下级、拖到别的选项上、导入带层级的大纲）时说明后果并确认。
  */
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ArrowUpToLine, ClipboardCopy, Eye, FileInput, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
@@ -11,6 +12,7 @@ import { newId } from '../../lib/format';
 import { CATALOG_ONLY, invalidateWrites } from '../../lib/queryClient';
 import { useRouter } from '../../lib/router';
 import { DuplicateHint, findDuplicates } from '../manage/DuplicateHint';
+import { ManageHelp, treeTips } from '../manage/ManageHelp';
 import { ManageTree, type ManageNode } from '../manage/ManageTree';
 import { NO_USAGE, scopeText, UNDO_HINT, usage } from '../manage/usage';
 import { useUndoToast } from '../manage/useUndoToast';
@@ -18,9 +20,22 @@ import { Popover, PopoverContent, PopoverTrigger } from '../Menu';
 import { Dialog, useConfirm, useToast } from '../ui';
 import { OptionPicker } from './OptionPicker';
 
+/** 分层的后果：确认框与说明共用。 */
+export function nestingConsequence(def: PropertyDefDTO): string {
+  return `之后按“${def.name}”筛选或检索时，选上级会包含它的全部下级${
+    def.type === 'select' ? `；“${def.name}”不能再用 >、< 按先后比较（例如“${def.name}:>=某个选项”）` : ''
+  }。没有下级选项时可以改回来。`;
+}
+
+/** 大纲里有没有层级：缩进的行或 # 标题 */
+const hasHierarchy = (text: string) => text.split(/\r?\n/).some((l) => l.trim() && (/^\s+\S/.test(l) || /^\s*#{1,6}\s/.test(l)));
+
 function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open: boolean; onClose: () => void }) {
   const toast = useToast();
   const [text, setText] = useState('');
+  // 不分层的属性遇到带层级的大纲：默认保留层级（同时把属性改为分层），可以取消
+  const [keepLevels, setKeepLevels] = useState(true);
+  const nest = !def.nested && keepLevels && hasHierarchy(text);
   // 停顿后试运行一次（服务端执行后整体回滚），预览每一行会落到哪里、哪些已存在
   const [debounced, setDebounced] = useState('');
   useEffect(() => {
@@ -28,8 +43,8 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
     return () => window.clearTimeout(timer);
   }, [text]);
   const preview = useQuery({
-    queryKey: ['outline-preview', def.id, debounced],
-    queryFn: () => sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: debounced, dryRun: true }),
+    queryKey: ['outline-preview', def.id, debounced, nest],
+    queryFn: () => sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: debounced, dryRun: true, nest }),
     enabled: open && debounced.trim() !== '',
     placeholderData: keepPreviousData,
     retry: false,
@@ -52,7 +67,7 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
             disabled={!text.trim()}
             onClick={async () => {
               try {
-                const r = await sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: text });
+                const r = await sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: text, nest });
                 invalidateWrites(CATALOG_ONLY);
                 toast(`已新建 ${r.created} 个选项，${r.existing} 个已存在`, 'success');
                 setText('');
@@ -68,9 +83,15 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
       }
     >
       <div className="space-y-3 text-sm">
-        <p className="text-ink-soft">
-          每行一个{def.nested ? '，用缩进、Markdown 列表（- / 1.）或 # 标题表示层级' : '（此属性不分层，层级会被展平）'}。已存在的同名选项会直接沿用，不会重复。
-        </p>
+        <p className="text-ink-soft">每行一个，用缩进、Markdown 列表（- / 1.）或 # 标题表示层级。已存在的同名选项会直接沿用，不会重复。</p>
+        {!def.nested && hasHierarchy(text) ? (
+          <label className="flex items-start gap-2 text-ink-soft">
+            <input type="checkbox" className="mt-1 accent-[var(--color-sage-deep)]" checked={keepLevels} onChange={(e) => setKeepLevels(e.target.checked)} />
+            <span>
+              保留层级：“{def.name}”的选项会改为可以有下级。{nestingConsequence(def)}不勾选则全部放在顶层。
+            </span>
+          </label>
+        ) : null}
         <div className="grid gap-3 md:grid-cols-2">
           <textarea
             className="textarea min-h-[18rem]"
@@ -153,8 +174,25 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     }
   };
 
+  /** 第一次要建下级时：说明分层的后果，确认后把属性改为分层。 */
+  const ensureNested = async (): Promise<boolean> => {
+    if (def.nested) return true;
+    const ok = await confirm({
+      title: `让“${def.name}”的选项可以有下级`,
+      message: `选项可以像“英语/完型填空”这样分出下级。${nestingConsequence(def)}`,
+      confirmLabel: '可以有下级',
+    });
+    if (!ok) return false;
+    return call(() => sendJSON('PUT', `/api/properties/${def.id}`, { nested: true }));
+  };
+  const flatten = () => void call(() => sendJSON('PUT', `/api/properties/${def.id}`, { nested: false }), `“${def.name}”的选项不再分层`);
+  const hasChildren = def.options.some((o) => o.parentId !== null);
+
   const [adding, setAdding] = useState<{ parentId: string | null; label: string } | null>(null);
-  const add = (parentId: string | null) => setAdding({ parentId, label: '' });
+  const add = async (parentId: string | null) => {
+    if (parentId !== null && !(await ensureNested())) return;
+    setAdding({ parentId, label: '' });
+  };
   const submitAdd = async () => {
     if (!adding?.label.trim()) return;
     const id = newId();
@@ -232,20 +270,20 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     }
   };
 
-  const move = (ids: string[], parentId: string | null, index: number | undefined) =>
-    void call(() => sendJSON('POST', '/api/property-options/move-many', { ids, parentId, index }));
+  const move = async (ids: string[], parentId: string | null, index: number | undefined) => {
+    if (parentId !== null && !(await ensureNested())) return;
+    await call(() => sendJSON('POST', '/api/property-options/move-many', { ids, parentId, index }));
+  };
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className="btn btn-sm" onClick={() => add(null)}>
-          <Plus size={14} /> 新建{def.nested ? '顶级' : ''}选项
+        <button type="button" className="btn btn-sm" onClick={() => void add(null)}>
+          <Plus size={14} /> 新建{hasChildren ? '顶级' : ''}选项
         </button>
-        {def.nested ? (
-          <button type="button" className="btn btn-sm" disabled={!current} onClick={() => current && add(current.id)}>
-            <Plus size={14} /> 新建下级
-          </button>
-        ) : null}
+        <button type="button" className="btn btn-sm" disabled={!current} onClick={() => current && void add(current.id)}>
+          <Plus size={14} /> 新建下级
+        </button>
         <button type="button" className="btn btn-sm" disabled={!current} onClick={() => current && setRenamingId(current.id)}>
           <Pencil size={14} /> 改名
         </button>
@@ -270,7 +308,29 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
         <button type="button" className="btn btn-sage btn-sm" onClick={() => setImporting(true)}>
           <FileInput size={14} /> 导入大纲
         </button>
+        <ManageHelp
+          title={`${def.name}的选项`}
+          tips={[
+            ...treeTips({ drag: '拖动调整顺序；拖到另一个选项上，即成为它的下级' }),
+            '选项改名、移动不会改动题目内容，也不改变题目的修改时间；删除或合并会同步修改用到它们的题目',
+            '需要下级时，选中一个选项点“新建下级”，或把选项拖到另一个选项上',
+          ]}
+        />
       </div>
+      {def.nested ? (
+        <p className="flex flex-wrap items-center gap-x-2 text-xs text-ink-faint">
+          <span>选项可以有下级：按“{def.name}”筛选时，选上级会包含全部下级。</span>
+          <button
+            type="button"
+            className="link-btn text-xs"
+            disabled={hasChildren}
+            title={hasChildren ? '还有下级选项：先把它们移到顶级或合并，才能改回不分层' : undefined}
+            onClick={flatten}
+          >
+            改为不分层
+          </button>
+        </p>
+      ) : null}
       {adding ? (
         <form
           className="flex flex-wrap items-center gap-2 text-sm"
@@ -297,9 +357,6 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
           </button>
         </form>
       ) : null}
-      <p className="text-xs text-ink-faint">
-        单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；拖动可调整顺序{def.nested ? '或放到别的选项下' : ''}；F2 或双击改名，Delete 删除所选。改名、移动不会改变题目的修改时间。
-      </p>
       <DuplicateHint groups={duplicates} describe={(n) => n.option.path} onMerge={(xs, into) => void merge(xs.map((x) => x.option), into.id)} />
       <div className="card-flat max-h-[60vh] overflow-y-auto px-2 py-2">
         <ManageTree<OptionNode>
@@ -309,7 +366,7 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
           selectedIds={selected}
           onSelectedIdsChange={setSelected}
           emptyText="还没有选项。可以逐个新建，或粘贴一份大纲导入。"
-          drag={{ canReparent: def.nested, canReorder: true, onMove: move }}
+          drag={{ canReparent: true, canReorder: true, onMove: move }}
           renamingId={renamingId}
           onRenamingIdChange={setRenamingId}
           rename={{
@@ -329,10 +386,10 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
                 disabled: !one,
                 onSelect: () => one && navigate(`/problems?${new URLSearchParams({ prop: `${def.id}:${one.id}` }).toString()}`),
               },
-              ...(def.nested ? [{ key: 'child', label: '新建下级', icon: <Plus size={13} />, disabled: !one, onSelect: () => one && add(one.id) }] : []),
+              { key: 'child', label: '新建下级', icon: <Plus size={13} />, disabled: !one, onSelect: () => one && void add(one.id) },
               { key: 'rename', label: '改名', icon: <Pencil size={13} />, disabled: !one, onSelect: () => one && startRename(one.id) },
-              ...(def.nested
-                ? [{ key: 'top', label: '移到顶级', icon: <ArrowUpToLine size={13} />, disabled: !xs.some((x) => x.parentId !== null), onSelect: () => move(topmost(xs).map((x) => x.id), null, undefined) }]
+              ...(hasChildren
+                ? [{ key: 'top', label: '移到顶级', icon: <ArrowUpToLine size={13} />, disabled: !xs.some((x) => x.parentId !== null), onSelect: () => void move(topmost(xs).map((x) => x.id), null, undefined) }]
                 : []),
               { key: 'merge', label: '合并到…', icon: <GitMerge size={13} />, disabled: xs.length === 0, onSelect: () => setMergeDialog(xs) },
               {

@@ -3,11 +3,12 @@
  * 会改动题目或资料的操作都先确认影响范围；服务端在同一事务里递增受影响对象的版本。
  */
 import { useQuery } from '@tanstack/react-query';
-import { ArrowUpToLine, Eye, Merge, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowUpToLine, Eraser, Eye, Merge, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDTO, TagRenameResultDTO, UsageDTO } from '@shared/api';
 import { buildTagTree, flattenTagTree, inSubtree, splitTagPath, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
+import { DuplicateHint, findDuplicates } from '../components/manage/DuplicateHint';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
 import { NO_USAGE, scopeText, sumUsage, UNDO_HINT, usage, used } from '../components/manage/usage';
 import { useUndoToast } from '../components/manage/useUndoToast';
@@ -79,6 +80,7 @@ function DictMergeDialog({
 
 interface DictNode extends ManageNode {
   entry: DictEntryDTO;
+  usage: UsageDTO;
 }
 
 type Undoable = { undoId?: string };
@@ -104,10 +106,12 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
           hint: `${usage(usageOf(e))}${e.inDict ? '' : ' · 不在候选中'}`,
           muted: !e.inDict,
           entry: e,
+          usage: usageOf(e),
         }),
       ),
     [entries],
   );
+  const duplicates = useMemo(() => findDuplicates(nodes), [nodes]);
 
   const call = async (fn: () => Promise<unknown>, ok: string) => {
     try {
@@ -195,6 +199,7 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
           <Plus size={15} /> 添加
         </button>
       </form>
+      <DuplicateHint groups={duplicates} describe={(n) => n.entry.value} onMerge={(xs, into) => void mergeMany(xs.map((x) => x.entry), into.entry.value)} />
       <div className="card-flat px-2 py-2">
         <ManageTree<DictNode>
           label={`${label}列表`}
@@ -284,6 +289,9 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     [data],
   );
   const tagNames = useMemo(() => data.tags.map((t) => t.name), [data]);
+  const duplicates = useMemo(() => findDuplicates(nodes), [nodes]);
+  /** 没有任何对象（含回收站中的）在用的标签行：编辑页里删掉最后一处用法后留下的 */
+  const unused = useMemo(() => data.tags.filter((t) => !t.used), [data]);
   const byKey = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   /** 只保留最上层：父子同时选中时按父级处理。 */
   const topmost = (xs: TagNode[]) => xs.filter((x) => !xs.some((y) => y !== x && x.id.startsWith(`${y.id}/`)));
@@ -365,6 +373,25 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     return out;
   };
 
+  const cleanUnused = async () => {
+    const ok = await confirm({
+      title: `删除 ${unused.length} 个没人用的标签`,
+      message: `${unused
+        .slice(0, 5)
+        .map((t) => `“${t.name}”`)
+        .join('、')}${unused.length > 5 ? ` 等 ${unused.length} 个` : ''}没有挂在任何题目或资料上（回收站里的也没有），删除不影响任何内容。${UNDO_HINT}`,
+      confirmLabel: '删除',
+    });
+    if (!ok) return;
+    try {
+      const r = await sendJSON<{ deleted: number } & Undoable>('POST', '/api/tags/delete-unused', { ids: unused.map((t) => t.id) });
+      invalidateWrites();
+      undoToast(`已删除 ${r.deleted} 个没人用的标签`, r.undoId);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
+
   const moveTo = async (sel: TagNode[], parent: TagNode | null) => {
     const xs = topmost(sel);
     const merges = mergesOnMove(xs, parent);
@@ -392,6 +419,15 @@ function TagsTab({ data }: { data: TagManageDTO }) {
       <p className="text-sm text-ink-soft">
         标签用 <code className="rounded bg-sunken px-1">/</code> 分层，例如“方法/换元”。单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；F2 改名（写完整路径即可移动），把标签拖到另一个标签上即移到它下面，Delete 删除所选。新名称与已有标签相同时会合并。
       </p>
+      {unused.length ? (
+        <div className="flex flex-wrap items-center gap-2 border border-line bg-sunken px-3 py-2 text-sm text-ink-soft" style={{ borderRadius: 'var(--radius-organic-sm)' }}>
+          <span className="flex-1">{unused.length} 个标签没有挂在任何题目或资料上（显示为“未使用”）。</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void cleanUnused()}>
+            <Eraser size={13} /> 全部删除
+          </button>
+        </div>
+      ) : null}
+      <DuplicateHint groups={duplicates} describe={(n) => n.path} onMerge={(xs, into) => void merge(xs, into.path)} />
       <div className="card-flat max-h-[70vh] overflow-y-auto px-2 py-2">
         <ManageTree<TagNode>
           label="标签树"

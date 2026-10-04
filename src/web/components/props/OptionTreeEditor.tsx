@@ -10,6 +10,7 @@ import { errorMessage, getJSON, sendJSON } from '../../lib/api';
 import { newId } from '../../lib/format';
 import { invalidateWrites } from '../../lib/queryClient';
 import { useRouter } from '../../lib/router';
+import { DuplicateHint, findDuplicates } from '../manage/DuplicateHint';
 import { ManageTree, type ManageNode } from '../manage/ManageTree';
 import { NO_USAGE, scopeText, UNDO_HINT, usage } from '../manage/usage';
 import { useUndoToast } from '../manage/useUndoToast';
@@ -75,6 +76,7 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
 
 interface OptionNode extends ManageNode {
   option: PropertyOptionDTO;
+  usage: UsageDTO;
 }
 
 export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
@@ -92,9 +94,14 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
   const usageOf = (id: string) => counts.data?.[id] ?? NO_USAGE;
   const byId = useMemo(() => new Map(def.options.map((o) => [o.id, o])), [def.options]);
   const nodes: OptionNode[] = useMemo(
-    () => def.options.map((o) => ({ id: o.id, parentId: o.parentId, label: o.label, hint: counts.data ? usage(counts.data[o.id] ?? NO_USAGE) : undefined, option: o })),
+    () =>
+      def.options.map((o) => {
+        const u = counts.data?.[o.id] ?? NO_USAGE;
+        return { id: o.id, parentId: o.parentId, label: o.label, hint: counts.data ? usage(u) : undefined, option: o, usage: u };
+      }),
     [def.options, counts.data],
   );
+  const duplicates = useMemo(() => findDuplicates(nodes), [nodes]);
   const selectedOptions = selected.map((id) => byId.get(id)).filter((o): o is PropertyOptionDTO => Boolean(o));
   const current = selectedOptions.length === 1 ? selectedOptions[0] : undefined;
 
@@ -243,6 +250,7 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
       <p className="text-xs text-ink-faint">
         单击选择，⌘/Ctrl 或 ⇧ 多选，右键或“⋯”打开菜单；拖动可调整顺序{def.nested ? '或放到别的选项下' : ''}；F2 或双击改名，Delete 删除所选。改名、移动不会改变题目的修改时间。
       </p>
+      <DuplicateHint groups={duplicates} describe={(n) => n.option.path} onMerge={(xs, into) => void merge(xs.map((x) => x.option), into.id)} />
       <div className="card-flat max-h-[60vh] overflow-y-auto px-2 py-2">
         <ManageTree<OptionNode>
           label={`${def.name}选项树`}

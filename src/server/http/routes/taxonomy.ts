@@ -1,5 +1,6 @@
 /** 分类管理：标签（按路径）与学科/学段字典。 */
 import {
+  idListSchema,
   dictMergeSchema,
   dictRenameSchema,
   dictReorderSchema,
@@ -15,8 +16,10 @@ import { getDictionary, listTags } from '../../services/catalog.js';
 import {
   addDictEntry,
   deleteTagPath,
+  deleteUnusedTags,
   deleteTagPaths,
   getDictManage,
+  getTagManage,
   mergeDictValues,
   mergeTagPaths,
   moveTagPaths,
@@ -31,6 +34,8 @@ import { body, type RegisterRoutes } from '../helpers.js';
 export const register: RegisterRoutes = (app, ctx) => {
   const { db } = ctx;
   app.get('/api/tags', (c) => c.json(listTags(db, { all: c.req.query('all') === '1' })));
+  app.get('/api/tags/manage', (c) => c.json(getTagManage(db)));
+  app.post('/api/tags/delete-unused', async (c) => c.json(deleteUnusedTags(db, (await body(c, idListSchema)).ids)));
   app.post('/api/tags/rename', async (c) => {
     const input = await body(c, tagRenameSchema);
     return c.json(renameTagPath(db, input.from, input.to));

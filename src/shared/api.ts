@@ -723,12 +723,21 @@ export interface TagRenameResultDTO {
   affectedItems: number;
 }
 
+/** 使用次数：未删除的题目、资料，以及回收站中的对象（题目与资料合计）。 */
+export interface UsageDTO {
+  problems: number;
+  materials: number;
+  trashed: number;
+}
+
 export interface DictEntryDTO {
   value: string;
   /** 是否在候选列表（字典）中；否则只是有对象在使用 */
   inDict: boolean;
   problemCount: number;
   materialCount: number;
+  /** 回收站中使用这个值的题目与资料数（改名、合并、清除同样作用于它们） */
+  trashedCount: number;
 }
 
 export interface DictManageDTO {
@@ -741,6 +750,14 @@ export interface TagDTO {
   name: string;
   problemCount: number;
   materialCount: number;
+}
+
+/** 数据管理的标签树。 */
+export interface TagManageDTO {
+  /** 全部标签行；used 为假表示没有任何对象（含回收站中的）在用它 */
+  tags: { id: string; name: string; used: boolean }[];
+  /** 标签树各节点（tagKey）下不重复的对象数，含子孙 */
+  usage: Record<string, UsageDTO>;
 }
 
 export interface TrashDTO {

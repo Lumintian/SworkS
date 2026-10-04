@@ -4,8 +4,8 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { ArrowUpToLine, Eye, Merge, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
-import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagDTO, TagRenameResultDTO } from '@shared/api';
+import { useMemo, useState } from 'react';
+import type { DictEntryDTO, DictKind, DictManageDTO, PropertyDefDTO, TagManageDTO, TagRenameResultDTO, UsageDTO } from '@shared/api';
 import { buildTagTree, flattenTagTree, tagKey } from '@shared/tagPath';
 import { TagPicker } from '../components/list/TagPicker';
 import { ManageTree, type ManageNode } from '../components/manage/ManageTree';
@@ -24,12 +24,23 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 const KIND_LABEL: Record<DictKind, string> = { subject: '学科', stage: '学段' };
 
-function usage(p: number, m: number): string {
+const NO_USAGE: UsageDTO = { problems: 0, materials: 0, trashed: 0 };
+
+function usage(u: UsageDTO): string {
   const parts = [];
-  if (p) parts.push(`${p} 道题`);
-  if (m) parts.push(`${m} 份资料`);
+  if (u.problems) parts.push(`${u.problems} 道题`);
+  if (u.materials) parts.push(`${u.materials} 份资料`);
+  if (u.trashed) parts.push(`回收站中 ${u.trashed} 项`);
   return parts.length ? parts.join('、') : '未使用';
 }
+
+const usageOf = (e: DictEntryDTO): UsageDTO => ({ problems: e.problemCount, materials: e.materialCount, trashed: e.trashedCount });
+const used = (u: UsageDTO) => u.problems + u.materials + u.trashed > 0;
+const sumUsage = (xs: UsageDTO[]): UsageDTO => ({
+  problems: xs.reduce((a, x) => a + x.problems, 0),
+  materials: xs.reduce((a, x) => a + x.materials, 0),
+  trashed: xs.reduce((a, x) => a + x.trashed, 0),
+});
 
 /** 选择合并目标：列出其他值，也可以直接输入一个新名称。 */
 function DictMergeDialog({
@@ -94,14 +105,20 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
   const label = KIND_LABEL[kind];
   const inDict = entries.filter((e) => e.inDict).map((e) => e.value);
   const byValue = new Map(entries.map((e) => [e.value, e]));
-  const nodes: DictNode[] = entries.map((e) => ({
-    id: e.value,
-    parentId: null,
-    label: e.value,
-    hint: `${usage(e.problemCount, e.materialCount)}${e.inDict ? '' : ' · 不在候选中'}`,
-    muted: !e.inDict,
-    entry: e,
-  }));
+  const nodes = useMemo(
+    () =>
+      entries.map(
+        (e): DictNode => ({
+          id: e.value,
+          parentId: null,
+          label: e.value,
+          hint: `${usage(usageOf(e))}${e.inDict ? '' : ' · 不在候选中'}`,
+          muted: !e.inDict,
+          entry: e,
+        }),
+      ),
+    [entries],
+  );
 
   const call = async (fn: () => Promise<unknown>, ok: string) => {
     try {
@@ -114,15 +131,14 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
       return false;
     }
   };
-  const total = (xs: DictEntryDTO[]) => ({ p: xs.reduce((a, x) => a + x.problemCount, 0), m: xs.reduce((a, x) => a + x.materialCount, 0) });
   const names = (xs: DictEntryDTO[]) => xs.map((x) => `“${x.value}”`).join('、');
 
   const rename = async (from: DictEntryDTO, to: string) => {
     const target = byValue.get(to);
-    if (from.problemCount + from.materialCount > 0 || target) {
+    if (used(usageOf(from)) || target) {
       const ok = await confirm({
         title: target ? `合并到“${to}”` : `改名为“${to}”`,
-        message: `${usage(from.problemCount, from.materialCount)}的${label}会从“${from.value}”改为“${to}”${target ? '，两者合并为一个' : ''}。仍打开着的编辑页需要重新加载才能保存。`,
+        message: `${usage(usageOf(from))}的${label}会从“${from.value}”改为“${to}”${target ? '，两者合并为一个' : ''}。仍打开着的编辑页需要重新加载才能保存。`,
         confirmLabel: target ? '合并' : '改名',
       });
       if (!ok) return;
@@ -132,13 +148,13 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
 
   /** 合并到 into；into 为 null 时从所有对象上清除并移出候选。 */
   const mergeMany = async (xs: DictEntryDTO[], into: string | null) => {
-    const c = total(xs);
+    const c = sumUsage(xs.map(usageOf));
     const ok = await confirm({
       title: into === null ? `清除 ${xs.length} 个${label}` : `把 ${xs.length} 个${label}合并到“${into}”`,
       message:
         into === null
-          ? `将从约 ${usage(c.p, c.m)}上清除 ${names(xs)}，并把它们移出候选。`
-          : `约 ${usage(c.p, c.m)}的${label}会改为“${into}”。仍打开着的编辑页需要重新加载才能保存。`,
+          ? `将从 ${usage(c)}上清除 ${names(xs)}，并把它们移出候选。`
+          : `${usage(c)}的${label}会改为“${into}”。仍打开着的编辑页需要重新加载才能保存。`,
       confirmLabel: into === null ? '清除' : '合并',
       danger: into === null,
     });
@@ -195,13 +211,13 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
           rename={{ label: `${label}新名称`, initial: (n) => n.entry.value, submit: (n, v) => void rename(n.entry, v) }}
           onDelete={(sel) => {
             const xs = sel.map((n) => n.entry);
-            if (xs.every((x) => x.problemCount + x.materialCount === 0)) void removeFromDict(xs);
+            if (!xs.some((x) => used(usageOf(x)))) void removeFromDict(xs);
             else void mergeMany(xs, null);
           }}
           actions={(sel, { startRename }) => {
             const xs = sel.map((n) => n.entry);
             const one = xs.length === 1 ? xs[0] : undefined;
-            const used = xs.some((x) => x.problemCount + x.materialCount > 0);
+            const inUse = xs.some((x) => used(usageOf(x)));
             return [
               {
                 key: 'view',
@@ -226,7 +242,7 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
                   ]
                 : []),
               { key: 'merge', label: '合并到…', icon: <Merge size={13} />, disabled: xs.length === 0, onSelect: () => setMerging(xs) },
-              used
+              inUse
                 ? { key: 'clear', label: `从所有对象上清除${xs.length > 1 ? ` ${xs.length} 项` : ''}`, icon: <Trash2 size={13} />, danger: true, separatorBefore: true, onSelect: () => void mergeMany(xs, null) }
                 : { key: 'remove', label: `移出候选${xs.length > 1 ? ` ${xs.length} 项` : ''}`, icon: <Trash2 size={13} />, danger: true, separatorBefore: true, disabled: xs.length === 0, onSelect: () => void removeFromDict(xs) },
             ];
@@ -251,38 +267,31 @@ function DictTab({ kind, entries }: { kind: DictKind; entries: DictEntryDTO[] })
 
 interface TagNode extends ManageNode {
   path: string;
-  p: number;
-  m: number;
+  usage: UsageDTO;
 }
 
-function TagsTab({ tags }: { tags: TagDTO[] }) {
+function TagsTab({ data }: { data: TagManageDTO }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { navigate } = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
   const [merging, setMerging] = useState<TagNode[] | null>(null);
-  const flat = flattenTagTree(buildTagTree(tags));
-  const counts = (key: string) => {
-    let p = 0;
-    let m = 0;
-    for (const t of tags) {
-      const k = tagKey(t.name);
-      if (k === key || k.startsWith(`${key}/`)) {
-        p += t.problemCount;
-        m += t.materialCount;
-      }
-    }
-    return { p, m };
-  };
-  const nodes: TagNode[] = flat.map((n) => {
-    const c = counts(n.key);
-    const parentKey = n.key.includes('/') ? n.key.slice(0, n.key.lastIndexOf('/')) : null;
-    return { id: n.key, parentId: parentKey, label: n.name, hint: usage(c.p, c.m), muted: n.tagIds.length === 0, path: n.path, p: c.p, m: c.m };
-  });
-  const byKey = new Map(nodes.map((n) => [n.id, n]));
+  // 计数由服务端按不重复的对象汇总到每个节点；只在数据变化时重建节点（选择变化不重算）
+  const nodes = useMemo(
+    () =>
+      flattenTagTree(buildTagTree(data.tags)).map((n): TagNode => {
+        const u = data.usage[n.key] ?? NO_USAGE;
+        const parentKey = n.key.includes('/') ? n.key.slice(0, n.key.lastIndexOf('/')) : null;
+        return { id: n.key, parentId: parentKey, label: n.name, hint: usage(u), muted: n.tagIds.length === 0, path: n.path, usage: u };
+      }),
+    [data],
+  );
+  const tagNames = useMemo(() => data.tags.map((t) => t.name), [data]);
+  const byKey = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   /** 只保留最上层：父子同时选中时按父级处理。 */
   const topmost = (xs: TagNode[]) => xs.filter((x) => !xs.some((y) => y !== x && x.id.startsWith(`${y.id}/`)));
-  const sum = (xs: TagNode[]) => ({ p: xs.reduce((a, x) => a + x.p, 0), m: xs.reduce((a, x) => a + x.m, 0) });
+  /** 多个子树的计数相加时，同时挂着两边标签的对象会被算两次，所以写“约” */
+  const scope = (xs: TagNode[]) => `${xs.length > 1 ? '约 ' : ''}${usage(sumUsage(xs.map((x) => x.usage)))}`;
   const names = (xs: TagNode[]) => (xs.length <= 3 ? xs.map((x) => `“${x.path}”`).join('、') : `“${xs[0]!.path}”等 ${xs.length} 个标签`);
 
   const report = (r: TagRenameResultDTO, verb: string) => {
@@ -293,7 +302,7 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
   const rename = async (n: TagNode, to: string) => {
     const ok = await confirm({
       title: `把“${n.path}”改为“${to}”`,
-      message: `连同下级标签一起改名（与已有标签同名时自动合并）。涉及约 ${usage(n.p, n.m)}；仍打开着的编辑页需要重新加载才能保存。`,
+      message: `连同下级标签一起改名（与已有标签同名时自动合并）。涉及 ${usage(n.usage)}；仍打开着的编辑页需要重新加载才能保存。`,
       confirmLabel: '改名',
     });
     if (!ok) return;
@@ -310,10 +319,9 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
   const remove = async (sel: TagNode[]) => {
     const xs = topmost(sel);
     if (xs.length === 0) return;
-    const c = sum(xs);
     const ok = await confirm({
       title: xs.length === 1 ? `删除标签“${xs[0]!.path}”` : `删除 ${xs.length} 个标签`,
-      message: `${names(xs)}连同下级标签一起删除，并从约 ${usage(c.p, c.m)}（含回收站中的）上移除。题目和资料本身不受影响。`,
+      message: `${names(xs)}连同下级标签一起删除，并从 ${scope(xs)}上移除。题目和资料本身不受影响。`,
       confirmLabel: xs.length === 1 ? '删除标签' : `删除 ${xs.length} 个标签`,
       danger: true,
     });
@@ -330,10 +338,9 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
 
   const merge = async (sel: TagNode[], into: string) => {
     const xs = topmost(sel);
-    const c = sum(xs);
     const ok = await confirm({
       title: `把 ${xs.length} 个标签合并到“${into}”`,
-      message: `${names(xs)}（连同下级）会改为“${into}”，与已有标签重名的自动合并。涉及约 ${usage(c.p, c.m)}；仍打开着的编辑页需要重新加载才能保存。`,
+      message: `${names(xs)}（连同下级）会改为“${into}”，与已有标签重名的自动合并。涉及 ${scope(xs)}；仍打开着的编辑页需要重新加载才能保存。`,
       confirmLabel: '合并',
     });
     if (!ok) return;
@@ -403,7 +410,7 @@ function TagsTab({ tags }: { tags: TagDTO[] }) {
       </div>
       <Dialog open={merging !== null} onClose={() => setMerging(null)} title={`把 ${merging?.length ?? 0} 个标签合并到…`}>
         <TagPicker
-          tags={tags.map((t) => t.name)}
+          tags={tagNames}
           placeholder="选择或输入目标标签…"
           onPick={(into) => {
             const xs = merging ?? [];
@@ -420,9 +427,10 @@ export function ManagePage() {
   const { search, navigate, path } = useRouter();
   const raw = new URLSearchParams(search).get('tab');
   const tab: Tab = TABS.some((t) => t.id === raw) ? (raw as Tab) : 'properties';
-  const dict = useQuery({ queryKey: ['manage', 'dict'], queryFn: () => getJSON<DictManageDTO>('/api/dict/manage') });
-  const tags = useQuery({ queryKey: ['manage', 'tags'], queryFn: () => getJSON<TagDTO[]>('/api/tags?all=1') });
-  const props = useQuery({ queryKey: ['manage', 'properties'], queryFn: () => getJSON<PropertyDefDTO[]>('/api/properties?all=1') });
+  // 只请求当前页签的数据
+  const dict = useQuery({ queryKey: ['manage', 'dict'], queryFn: () => getJSON<DictManageDTO>('/api/dict/manage'), enabled: tab === 'subject' || tab === 'stage' });
+  const tags = useQuery({ queryKey: ['manage', 'tags'], queryFn: () => getJSON<TagManageDTO>('/api/tags/manage'), enabled: tab === 'tags' });
+  const props = useQuery({ queryKey: ['manage', 'properties'], queryFn: () => getJSON<PropertyDefDTO[]>('/api/properties?all=1'), enabled: tab === 'properties' });
   const q = tab === 'tags' ? tags : tab === 'properties' ? props : dict;
   return (
     <div>
@@ -437,7 +445,7 @@ export function ManagePage() {
       {q.isPending ? <Spinner /> : null}
       {q.isError ? <ErrorBox message={errorMessage(q.error)} onRetry={() => void q.refetch()} /> : null}
       {tab === 'properties' && props.data ? <PropertiesTab defs={props.data} /> : null}
-      {tab === 'tags' && tags.data ? <TagsTab tags={tags.data} /> : null}
+      {tab === 'tags' && tags.data ? <TagsTab data={tags.data} /> : null}
       {(tab === 'subject' || tab === 'stage') && dict.data ? <DictTab kind={tab} entries={dict.data[tab]} /> : null}
     </div>
   );

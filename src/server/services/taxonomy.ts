@@ -5,8 +5,8 @@
  */
 import { recordCatalog } from '../events/changes.js';
 import { rewriteSavedSearches } from './savedSearches.js';
-import type { DictEntryDTO, DictKind, DictManageDTO, TagRenameResultDTO } from '../../shared/api.js';
-import { inSubtree, normalizeTagInput, splitTagPath, tagKey, TAG_SEP } from '../../shared/tagPath.js';
+import type { DictEntryDTO, DictKind, DictManageDTO, TagManageDTO, TagRenameResultDTO, UsageDTO } from '../../shared/api.js';
+import { ancestorKeys, inSubtree, normalizeTagInput, splitTagPath, tagKey, TAG_SEP } from '../../shared/tagPath.js';
 import type { DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { normalizeShortText, placeholders, type Owner } from './rows.js';
@@ -27,6 +27,50 @@ function subtreeTags(db: DB, path: string): TagRow[] {
   const pk = tagKey(path);
   if (!pk) throw new AppError('VALIDATION', '标签路径不能为空');
   return allTags(db).filter((t) => inSubtree(tagKey(t.name), pk));
+}
+
+/**
+ * 数据管理的标签树：全部标签行，以及每个节点（含子孙）下不重复的对象数。
+ * 同时挂着父子标签的对象只算一次；回收站中的对象单独计数（改名、合并、删除同样作用于它们）。
+ */
+export function getTagManage(db: DB): TagManageDTO {
+  const used = new Set<string>();
+  const sets = new Map<string, { problems: Set<string>; materials: Set<string>; trashed: Set<string> }>();
+  for (const [table, col, owners, kind] of [
+    ['problem_tags', 'problem_id', 'problems', 'problem'],
+    ['material_tags', 'material_id', 'materials', 'material'],
+  ] as const) {
+    const pairs = db
+      .prepare(`SELECT x.${col} AS owner, x.tag_id, t.name, e.deleted_at FROM ${table} x JOIN tags t ON t.id = x.tag_id JOIN ${owners} e ON e.id = x.${col}`)
+      .all() as { owner: string; tag_id: string; name: string; deleted_at: string | null }[];
+    for (const p of pairs) {
+      used.add(p.tag_id);
+      const key = tagKey(p.name);
+      if (!key) continue;
+      for (const k of ancestorKeys(key)) {
+        let s = sets.get(k);
+        if (!s) sets.set(k, (s = { problems: new Set(), materials: new Set(), trashed: new Set() }));
+        if (p.deleted_at) s.trashed.add(`${kind}:${p.owner}`);
+        else s[owners].add(p.owner);
+      }
+    }
+  }
+  const usage: Record<string, UsageDTO> = {};
+  for (const [k, s] of sets) usage[k] = { problems: s.problems.size, materials: s.materials.size, trashed: s.trashed.size };
+  return { tags: allTags(db).map((t) => ({ id: t.id, name: t.name, used: used.has(t.id) })), usage };
+}
+
+/** 删除没有任何对象（含回收站中的）在用的标签行；期间又被用上的跳过。标签行本身不含内容。 */
+export function deleteUnusedTags(db: DB, ids: readonly string[]): { deleted: number } {
+  return db.transaction(() => {
+    recordCatalog(db, 'tags');
+    const del = db.prepare(
+      'DELETE FROM tags WHERE id = ? AND NOT EXISTS (SELECT 1 FROM problem_tags WHERE tag_id = tags.id) AND NOT EXISTS (SELECT 1 FROM material_tags WHERE tag_id = tags.id)',
+    );
+    let deleted = 0;
+    for (const id of new Set(ids.map((x) => x.toLowerCase()))) deleted += del.run(id).changes;
+    return { deleted };
+  })();
 }
 
 /** 挂着这些标签的全部对象（含回收站中的）。 */
@@ -231,34 +275,29 @@ function dictEntries(db: DB, kind: DictKind): { value: string; position: number 
 
 export function getDictManage(db: DB): DictManageDTO {
   const build = (kind: DictKind): DictEntryDTO[] => {
-    const counts = new Map<string, { p: number; m: number }>();
+    // 回收站中的对象单独计数：只有它们在用的值也要列出来，否则既看不到、又因“仍在使用”移不出候选
+    const counts = new Map<string, { p: number; m: number; t: number }>();
     for (const [table, key] of [
       ['problems', 'p'],
       ['materials', 'm'],
     ] as const) {
       for (const r of db
-        .prepare(`SELECT ${kind} AS v, COUNT(*) AS n FROM ${table} WHERE ${kind} IS NOT NULL AND deleted_at IS NULL GROUP BY ${kind}`)
-        .all() as { v: string; n: number }[]) {
-        const c = counts.get(r.v) ?? { p: 0, m: 0 };
-        c[key] = r.n;
+        .prepare(`SELECT ${kind} AS v, deleted_at IS NOT NULL AS trashed, COUNT(*) AS n FROM ${table} WHERE ${kind} IS NOT NULL GROUP BY ${kind}, trashed`)
+        .all() as { v: string; trashed: number; n: number }[]) {
+        const c = counts.get(r.v) ?? { p: 0, m: 0, t: 0 };
+        if (r.trashed) c.t += r.n;
+        else c[key] = r.n;
         counts.set(r.v, c);
       }
     }
-    // 回收站中的对象也在使用的值，要能看到（计数为 0 也列出）
-    for (const table of ['problems', 'materials'] as const) {
-      for (const r of db.prepare(`SELECT DISTINCT ${kind} AS v FROM ${table} WHERE ${kind} IS NOT NULL`).all() as { v: string }[]) {
-        if (!counts.has(r.v)) counts.set(r.v, { p: 0, m: 0 });
-      }
-    }
+    const entry = (value: string, inDict: boolean): DictEntryDTO => {
+      const c = counts.get(value);
+      return { value, inDict, problemCount: c?.p ?? 0, materialCount: c?.m ?? 0, trashedCount: c?.t ?? 0 };
+    };
     const dict = dictEntries(db, kind).map((e) => e.value);
-    const out: DictEntryDTO[] = dict.map((value) => ({
-      value,
-      inDict: true,
-      problemCount: counts.get(value)?.p ?? 0,
-      materialCount: counts.get(value)?.m ?? 0,
-    }));
-    for (const [value, c] of [...counts].sort((a, b) => a[0].localeCompare(b[0], 'zh-Hans-CN'))) {
-      if (!dict.includes(value)) out.push({ value, inDict: false, problemCount: c.p, materialCount: c.m });
+    const out = dict.map((value) => entry(value, true));
+    for (const value of [...counts.keys()].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))) {
+      if (!dict.includes(value)) out.push(entry(value, false));
     }
     return out;
   };
@@ -376,7 +415,7 @@ export function removeDictEntries(db: DB, kind: string, values: readonly string[
         (db.prepare(`SELECT COUNT(*) AS n FROM materials WHERE ${kind} = ?`).get(v) as { n: number }).n;
       if (used > 0) inUse.push(`“${v}”（${used} 个对象）`);
     }
-    if (inUse.length) throw new AppError('CONFLICT', `仍在使用：${inUse.join('、')}。请先合并到其他值或从对象上清除`);
+    if (inUse.length) throw new AppError('CONFLICT', `仍在使用（含回收站中的）：${inUse.join('、')}。请先合并到其他值或从对象上清除`);
     const del = db.prepare('DELETE FROM dict_entries WHERE kind = ? AND value = ?');
     for (const v of list) del.run(kind, v);
   })();

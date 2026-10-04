@@ -80,6 +80,33 @@ describe('标签管理（按路径）', () => {
   });
 });
 
+describe('标签树的计数与清理', () => {
+  it('每个节点按不重复的对象计数（含子孙），回收站中的单独计数；列出没人用的标签行', async () => {
+    t = await makeTestApp();
+    await create(t, { tags: ['几何/圆', '几何/三角形'] });
+    await create(t, { tags: ['几何/圆'] }, 'materials');
+    const gone = await create(t, { tags: ['几何/圆', '函数'] });
+    await t.request('DELETE', `/api/problems/${gone.id}`);
+    // 只剩一个没人用的标签行
+    const lonely = await create(t, { tags: ['孤立'] });
+    await t.json('PUT', `/api/problems/${lonely.id}`, { expectedVersion: lonely.version, blocks: [], tags: [] });
+    const r = (await t.json('GET', '/api/tags/manage')).body as { tags: { id: string; name: string; used: boolean }[]; usage: Record<string, unknown> };
+    expect(r.usage['几何']).toEqual({ problems: 1, materials: 1, trashed: 1 });
+    expect(r.usage['几何/三角形']).toEqual({ problems: 1, materials: 0, trashed: 0 });
+    expect(r.usage['函数']).toEqual({ problems: 0, materials: 0, trashed: 1 });
+    expect(r.usage['孤立']).toBeUndefined();
+    const unused = r.tags.filter((x) => !x.used);
+    expect(unused.map((x) => x.name)).toEqual(['孤立']);
+
+    // 清理：只删仍然没人用的行（期间被用上的跳过）
+    const used = r.tags.find((x) => x.name === '函数')!;
+    const del = await t.json('POST', '/api/tags/delete-unused', { ids: [unused[0]!.id, used.id] });
+    expect(del.body).toEqual({ deleted: 1 });
+    const names = ((await t.json('GET', '/api/tags/manage')).body.tags as { name: string }[]).map((x) => x.name).sort();
+    expect(names).toEqual(['函数', '几何/三角形', '几何/圆'].sort());
+  });
+});
+
 describe('学科/学段字典管理', () => {
   it('列出候选与使用次数，含未进入字典但在使用的值', async () => {
     t = await makeTestApp();
@@ -105,6 +132,23 @@ describe('学科/学段字典管理', () => {
     await t.json('POST', '/api/dict/subject/rename', { from: '数学', to: null });
     expect((await t.json('GET', `/api/problems/${a.id}`)).body.subject).toBeNull();
     expect((await t.json('GET', '/api/dict')).body.subjects).not.toContain('数学');
+  });
+
+  it('只有回收站中的对象在用的值：单独计数，清除时同样改写它们，之后可以移出候选', async () => {
+    t = await makeTestApp();
+    await t.json('POST', '/api/dict/subject/add', { value: '天文' });
+    const p = await create(t, { subject: '天文' });
+    await t.request('DELETE', `/api/problems/${p.id}`);
+    const entry = (await t.json('GET', '/api/dict/manage')).body.subject.find((e: { value: string }) => e.value === '天文');
+    expect(entry).toEqual({ value: '天文', inDict: true, problemCount: 0, materialCount: 0, trashedCount: 1 });
+    const bad = await t.json('POST', '/api/dict/subject/remove-many', { values: ['天文'] });
+    expect(bad.status).toBe(409);
+    expect(bad.body.error.message).toContain('回收站');
+    const r = await t.json('POST', '/api/dict/subject/merge', { values: ['天文'], into: null });
+    expect(r.body).toMatchObject({ affectedItems: 1 });
+    expect((t.lib.db.prepare('SELECT subject FROM problems WHERE id = ?').get(p.id) as { subject: string | null }).subject).toBeNull();
+    const after = (await t.json('GET', '/api/dict/manage')).body.subject.map((e: { value: string }) => e.value);
+    expect(after).not.toContain('天文');
   });
 
   it('字典内改名保持位置；排序；仍在使用的值不能直接移除', async () => {

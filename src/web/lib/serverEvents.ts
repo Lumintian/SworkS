@@ -13,6 +13,7 @@ interface EntityRef {
 
 type ServerChange =
   | { type: 'entities.changed'; problems: EntityRef[]; materials: EntityRef[]; origin: { kind: string; clientId?: string } }
+  | { type: 'lessons.changed'; lessons: EntityRef[]; origin: { kind: string; clientId?: string } }
   | { type: 'catalog.changed' | 'attempts.changed' | 'rawInputs.created' | 'remoteImages.changed'; origin: { kind: string; clientId?: string } };
 
 function toWriteEvent(c: ServerChange): WriteEvent {
@@ -21,6 +22,11 @@ function toWriteEvent(c: ServerChange): WriteEvent {
     const versions: Record<string, number> = {};
     for (const r of [...c.problems, ...c.materials]) versions[r.id] = r.version;
     return { problems: c.problems.map((r) => r.id), materials: c.materials.map((r) => r.id), versions, ...(originClient ? { originClient } : {}) };
+  }
+  if (c.type === 'lessons.changed') {
+    const versions: Record<string, number> = {};
+    for (const r of c.lessons) versions[r.id] = r.version;
+    return { problems: [], materials: [], lessons: c.lessons.map((r) => r.id), versions, ...(originClient ? { originClient } : {}) };
   }
   // 不涉及具体题目/资料：列表、导航与目录重新获取，编辑页不受影响
   return { problems: [], materials: [], ...(originClient ? { originClient } : {}) };

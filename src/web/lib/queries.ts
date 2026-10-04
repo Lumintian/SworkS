@@ -1,7 +1,7 @@
 /** 列表、导航计数等查询（TanStack Query）。 */
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
-import type { AttemptDTO, ListIdsResponse, ListResponse, NavDTO, StudentDetailDTO, StudentDTO } from '@shared/api';
+import type { AttemptDTO, LessonListItemDTO, ListIdsResponse, ListResponse, NavDTO, StudentDetailDTO, StudentDTO } from '@shared/api';
 import { PAGE_SIZE } from '@shared/constants';
 import { listFiltersToParams, parseListFilters, type ListFilters } from '@shared/listFilters';
 import { getJSON } from './api';
@@ -61,6 +61,20 @@ export function useProblemAttempts(problemId: string, enabled: boolean) {
   return useQuery({
     queryKey: ['attempts', 'problem', problemId],
     queryFn: () => getJSON<AttemptDTO[]>(`/api/attempts?problemId=${problemId}`),
+    enabled,
+  });
+}
+
+/** 未删除的教案，最近修改的在前。 */
+export function useLessons() {
+  return useQuery({ queryKey: ['lessons'], queryFn: () => getJSON<LessonListItemDTO[]>('/api/lessons') });
+}
+
+/** 引用了这道题的教案。 */
+export function useProblemLessons(problemId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['lessons', 'problem', problemId],
+    queryFn: () => getJSON<LessonListItemDTO[]>(`/api/lessons?problemId=${problemId}`),
     enabled,
   });
 }

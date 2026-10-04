@@ -13,6 +13,7 @@ import * as assets from './routes/assets.js';
 import * as backup from './routes/backup.js';
 import * as events from './routes/events.js';
 import * as ingest from './routes/ingest.js';
+import * as lessons from './routes/lessons.js';
 import * as materials from './routes/materials.js';
 import * as mcp from './routes/mcp.js';
 import * as problems from './routes/problems.js';
@@ -28,9 +29,23 @@ import { serveWeb } from './static.js';
 
 const CLIENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-const ROUTES: RegisterRoutes[] = [session, events, taxonomy, students, properties, problems, materials, savedSearches, ingest, assets, backup, settings, undo, mcp].map(
-  (m) => m.register,
-);
+const ROUTES: RegisterRoutes[] = [
+  session,
+  events,
+  taxonomy,
+  students,
+  properties,
+  problems,
+  materials,
+  lessons,
+  savedSearches,
+  ingest,
+  assets,
+  backup,
+  settings,
+  undo,
+  mcp,
+].map((m) => m.register);
 
 export function createApp(ctx: AppContext): Hono {
   const app = new Hono();

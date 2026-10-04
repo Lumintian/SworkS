@@ -1,6 +1,6 @@
 # 数据库结构与迁移
 
-SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/schema-v1.ts`…`schema-v4.ts`，迁移列表见 `src/server/db/migrations.ts`。当前版本为 v4。
+SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/schema-v1.ts`…`schema-v5.ts`，迁移列表见 `src/server/db/migrations.ts`。当前版本为 v5。
 
 ## 连接配置
 
@@ -34,6 +34,8 @@ SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/sc
 | `property_values`（v2） | 属性取值：恰好属于一个题目或一个资料；`option_id`、`text_value`、`number_value` 三者恰好一个（勾选存 1，日期存文本 `YYYY-MM-DD`）。部分唯一索引保证选项不重复、标量属性每个对象只有一个值 |
 | `students`（v3） | 学生：姓名、学段/年级、备注、归档时间、`write_version` |
 | `student_attempts`（v3） | 作答流水：学生、题目、作答时间、结果（`correct`/`partial`/`wrong`/`blank`）、主观难度 1–5、用时、备注、软删除 |
+| `lessons`（v5） | 教案：可空 `title`、`note`（说明，纯文字）、时间、`deleted_at`（软删除）、`write_version` |
+| `lesson_items`（v5） | 教案里的题目：主键 `(lesson_id, problem_id)`（同一道题在一份教案里只出现一次）、`position`（同一教案内唯一）、`note`（讲解要点）。按引用使用题目，不复制内容 |
 | `saved_searches`（v4） | 常用检索：范围（题目/资料）、名称（未删除的同范围内不区分大小写唯一）、`query_json`（`{v, text, ast}`，AST 中属性与选项用 ID、标签用路径）、排序、位置、是否在导航显示、软删除 |
 
 ## 约定
@@ -47,6 +49,7 @@ SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/sc
 - 在数据管理里删除标签：从所有对象（含回收站中的）解除挂接后，删除已没有任何引用的标签行。标签行本身不含内容，这是唯一会物理删除的记录。
 - 题目/资料的属性取值属于其内容：保存、批量操作、删除或合并选项、改属性类型时取值写法变了，都会递增 `write_version`；选项改名、移动只重建检索投影。已归档或不再适用的属性，其取值冻结保留。
 - 作答记录独立于题目内容：写入作答不改变题目的 `write_version` 与 `updated_at`。
+- 教案与题目的版本互不影响：教案的任何修改（含加题、重排、讲解要点）只递增教案自己的 `write_version`；题目进了回收站，教案里的引用保留。
 
 ## 迁移
 
@@ -64,3 +67,4 @@ SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/sc
 | v2 | 自定义属性（预置题型、难度、考点）；`search_index` 换表去掉 `field` 约束 |
 | v3 | 学生与作答记录 |
 | v4 | `notes.seq`；`raw_inputs` 原文件摘要三列；`saved_searches`；题型预置属性改为分层 |
+| v5 | 教案：`lessons`、`lesson_items` |

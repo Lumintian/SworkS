@@ -49,7 +49,7 @@ export function TrashPage() {
 
   if (error) return <ErrorBox message={error} onRetry={load} />;
   if (!data) return <Spinner />;
-  const empty = data.problems.length + data.materials.length + data.notes.length === 0;
+  const empty = data.problems.length + data.materials.length + data.lessons.length + data.notes.length === 0;
   return (
     <div className="space-y-6">
       <PageHeader title="回收站" subtitle="删除采用可恢复的软删除；目前不提供永久清空。删除题目不会删除其来源资料或共用图片。" />
@@ -126,6 +126,28 @@ export function TrashPage() {
                   <p className="truncate text-xs text-ink-soft">{m.summary || '（无文字内容）'} · 删除于 {formatTime(m.deletedAt)}</p>
                 </div>
                 <button type="button" className="btn btn-sm btn-sage" onClick={() => void restore(`/api/materials/${m.id}/restore`, '资料')}>
+                  <RotateCcw size={14} /> 恢复
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {data.lessons.length > 0 ? (
+        <section className="space-y-2">
+          <h2 className="font-semibold text-stone">教案</h2>
+          <ul className="space-y-2">
+            {data.lessons.map((l) => (
+              <li key={l.id} className="card-flat flex flex-wrap items-center gap-3 px-4 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <Link to={`/lessons/${l.id}`} className={`font-semibold ${l.title ? 'text-stone' : 'italic text-ink-soft'}`}>
+                    {l.title ?? '未命名教案'}
+                  </Link>
+                  <p className="truncate text-xs text-ink-soft">
+                    {l.problemCount} 道题 · 删除于 {formatTime(l.deletedAt)}
+                  </p>
+                </div>
+                <button type="button" className="btn btn-sm btn-sage" onClick={() => void restore(`/api/lessons/${l.id}/restore`, '教案')}>
                   <RotateCcw size={14} /> 恢复
                 </button>
               </li>

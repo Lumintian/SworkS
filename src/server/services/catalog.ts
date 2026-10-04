@@ -106,7 +106,8 @@ export function getNav(db: DB, kind: OwnerKind): NavDTO {
   };
 }
 
-function firstTextSummary(db: DB, col: 'problem_id' | 'material_id', id: string): string {
+/** 第一个有文字的内容块（或图片说明）的摘要。 */
+export function firstTextSummary(db: DB, col: 'problem_id' | 'material_id', id: string): string {
   const b = db
     .prepare(
       `SELECT kind, body, caption FROM content_blocks WHERE ${col} = ? AND (body IS NOT NULL AND body <> '' OR caption IS NOT NULL) ORDER BY position LIMIT 1`,
@@ -157,5 +158,13 @@ export function getTrash(db: DB): TrashDTO {
     summary: plainSummary(r.body_md, 80),
     deletedAt: r.deleted_at,
   }));
-  return { problems, materials, notes };
+  const lessons = (
+    db
+      .prepare(
+        `SELECT l.id, l.title, l.deleted_at, (SELECT COUNT(*) FROM lesson_items i WHERE i.lesson_id = l.id) AS n
+         FROM lessons l WHERE l.deleted_at IS NOT NULL ORDER BY l.deleted_at DESC`,
+      )
+      .all() as { id: string; title: string | null; deleted_at: string; n: number }[]
+  ).map((r) => ({ id: r.id, title: r.title, problemCount: r.n, deletedAt: r.deleted_at }));
+  return { problems, materials, lessons, notes };
 }

@@ -5,9 +5,10 @@
  */
 
 export interface WriteEvent {
-  /** 受影响的对象；都省略表示范围不定（例如标签改名影响了多类对象），空数组表示不涉及题目/资料 */
+  /** 受影响的对象；都省略表示范围不定（例如标签改名影响了多类对象），空数组表示不涉及这类对象 */
   problems?: string[];
   materials?: string[];
+  lessons?: string[];
   /** 服务端事件带上各对象的当前版本：编辑页据此判断是否需要重新加载 */
   versions?: Record<string, number>;
   /** 服务端事件：发起这次写入的标签页（页面写入时带上 TAB_ID） */

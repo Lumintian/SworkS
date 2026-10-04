@@ -10,6 +10,7 @@ import { matchPath, RouterProvider, useRouter } from './lib/router';
 import { AboutPage } from './pages/AboutPage';
 import { BackupPage } from './pages/BackupPage';
 import { InboxPage, MaterialsPage, ProblemsPage } from './pages/ListPages';
+import { LessonEditorPage, LessonsPage } from './pages/LessonPages';
 import { ManagePage } from './pages/ManagePage';
 import { MaterialEditorPage } from './pages/MaterialEditorPage';
 import { StudentPage, StudentsPage } from './pages/StudentPages';
@@ -21,7 +22,7 @@ function Routes() {
   const { path, search, navigate } = useRouter();
   const params = new URLSearchParams(search);
   const newIdParam = params.get('id');
-  const isNewRoute = path === '/problems/new' || path === '/materials/new';
+  const isNewRoute = path === '/problems/new' || path === '/materials/new' || path === '/lessons/new';
 
   // 新建页的 ID 放在 URL 里：刷新或重试不会产生第二条记录
   useEffect(() => {
@@ -39,8 +40,10 @@ function Routes() {
   if (path === '/settings') return <SettingsPage />;
   if (path === '/manage') return <ManagePage />;
   if (path === '/students') return <StudentsPage />;
+  if (path === '/lessons') return <LessonsPage />;
   if (isNewRoute) {
     if (!newIdParam || !isUuid(newIdParam)) return null;
+    if (path === '/lessons/new') return <LessonEditorPage key={newIdParam} id={newIdParam} isNew />;
     const status = params.get('status');
     return path === '/problems/new' ? (
       <ProblemEditorPage key={newIdParam} id={newIdParam} isNew />
@@ -57,6 +60,8 @@ function Routes() {
   if (p && isUuid(p.id!)) return <ProblemEditorPage key={p.id} id={p.id!} isNew={false} />;
   const st = matchPath('/students/:id', path);
   if (st && isUuid(st.id!)) return <StudentPage key={st.id} id={st.id!} />;
+  const l = matchPath('/lessons/:id', path);
+  if (l && isUuid(l.id!)) return <LessonEditorPage key={l.id} id={l.id!} isNew={false} />;
   const m = matchPath('/materials/:id', path);
   if (m && isUuid(m.id!)) return <MaterialEditorPage key={m.id} id={m.id!} isNew={false} initialStatus="active" />;
   return <EmptyState title="页面不存在">请从左侧导航进入。</EmptyState>;

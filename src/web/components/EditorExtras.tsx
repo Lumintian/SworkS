@@ -160,10 +160,10 @@ export function RawInputsPanel({ items }: { items: RawInputDTO[] }) {
 }
 
 /** 其他标签页已修改了这个对象，而本页仍有未保存的修改：提前提示，避免保存时才发现冲突。 */
-export function ChangedElsewhereBanner({ noun, onReload }: { noun: string; onReload: () => void }) {
+export function ChangedElsewhereBanner({ noun, example = '例如批量加标签', onReload }: { noun: string; example?: string; onReload: () => void }) {
   return (
     <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 border border-clay/60 bg-ochre-soft px-4 py-2.5 text-sm text-ochre" style={{ borderRadius: 'var(--radius-organic-sm)' }} data-testid="changed-elsewhere">
-      <span className="flex-1 font-semibold">这{noun}已在其他页面被修改（例如批量加标签）。现在保存会提示冲突；可以先复制本页内容，或放弃本页修改重新加载。</span>
+      <span className="flex-1 font-semibold">这{noun}已在其他页面被修改（{example}）。现在保存会提示冲突；可以先复制本页内容，或放弃本页修改重新加载。</span>
       <button type="button" className="btn btn-sm" onClick={onReload}>
         重新加载
       </button>

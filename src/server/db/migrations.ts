@@ -10,6 +10,7 @@ import { SCHEMA_V1 } from './schema-v1.js';
 import { migrateV2 } from './schema-v2.js';
 import { SCHEMA_V3 } from './schema-v3.js';
 import { SCHEMA_V4 } from './schema-v4.js';
+import { SCHEMA_V5 } from './schema-v5.js';
 
 export interface Migration {
   version: number;
@@ -42,6 +43,11 @@ export const MIGRATIONS: Migration[] = [
     version: 4,
     name: 'notes-seq-originals-saved-searches',
     up: (db) => db.exec(SCHEMA_V4),
+  },
+  {
+    version: 5,
+    name: 'lessons',
+    up: (db) => db.exec(SCHEMA_V5),
   },
 ];
 

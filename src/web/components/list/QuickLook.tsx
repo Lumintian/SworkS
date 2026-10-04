@@ -3,13 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import type { MaterialDTO, ProblemDTO } from '@shared/api';
 import { NOTE_TAB_ORDER, type SearchField } from '@shared/constants';
-import { assetUrl, errorMessage, getJSON } from '../../lib/api';
+import { errorMessage, getJSON } from '../../lib/api';
 import { formatTime } from '../../lib/format';
 import { useCatalog } from '../../lib/useCatalog';
 import { isEditableTarget, useKeydown } from '../../lib/hotkeys';
 import type { Collection } from '../../lib/queries';
-import { MarkdownAssetsContext, MarkdownView } from '../../markdown/MarkdownView';
-import { NotesTabs } from '../NotesTabs';
+import { EntityContent } from '../EntityContent';
 import { Dialog, ErrorBox, Spinner } from '../ui';
 
 export function QuickLook({
@@ -92,55 +91,24 @@ export function QuickLook({
         {q.isLoading ? <Spinner /> : null}
         {q.isError ? <ErrorBox message={errorMessage(q.error)} /> : null}
         {e ? (
-          <MarkdownAssetsContext.Provider value={{ remoteImageUrls: e.remoteImageUrls, remoteImages: e.remoteImages }}>
-            <div className="space-y-4">
-              <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-faint">
-                {e.subject ? <span>{e.subject}</span> : null}
-                {e.stage ? <span>{e.stage}</span> : null}
-                {propText.map((t) => (
-                  <span key={t} className="chip chip-clay">
-                    {t}
-                  </span>
-                ))}
-                {e.tags.map((t) => (
-                  <span key={t} className="chip">
-                    {t}
-                  </span>
-                ))}
-                <span>修改于 {formatTime(e.updatedAt)}</span>
-              </p>
-              {e.blocks.length === 0 ? <p className="text-sm italic text-ink-faint">（没有内容）</p> : null}
-              {e.blocks.map((b) => {
-                if (b.kind === 'markdown') return <MarkdownView key={b.id} source={b.body ?? ''} />;
-                if (b.kind === 'text')
-                  return (
-                    <p key={b.id} className="whitespace-pre-wrap text-[0.97rem] leading-7">
-                      {b.body}
-                    </p>
-                  );
-                const remote = b.remoteImageId ? e.remoteImages[b.remoteImageId] : undefined;
-                const local = b.assetId ?? (remote?.status === 'archived' ? remote.assetId : null);
-                return (
-                  <figure key={b.id} className="space-y-1">
-                    {local ? (
-                      <img className="source-image" src={assetUrl(local)} alt={b.caption ?? '题目图片'} loading="lazy" />
-                    ) : (
-                      <span className="md-img-placeholder md-img-placeholder--warn">
-                        <span className="md-img-placeholder__title">图片尚未归档</span>
-                        {remote ? <span className="md-img-placeholder__url">{remote.url}</span> : null}
-                      </span>
-                    )}
-                    {b.caption ? <figcaption className="text-xs text-ink-faint">{b.caption}</figcaption> : null}
-                  </figure>
-                );
-              })}
-              {'notes' in e && e.notes.length ? (
-                <div className="border-t border-line pt-4">
-                  <NotesTabs key={e.id} notes={e.notes} preferred={NOTE_TAB_ORDER.find((t) => hits?.includes(t))} />
-                </div>
-              ) : null}
-            </div>
-          </MarkdownAssetsContext.Provider>
+          <div className="space-y-4">
+            <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-faint">
+              {e.subject ? <span>{e.subject}</span> : null}
+              {e.stage ? <span>{e.stage}</span> : null}
+              {propText.map((t) => (
+                <span key={t} className="chip chip-clay">
+                  {t}
+                </span>
+              ))}
+              {e.tags.map((t) => (
+                <span key={t} className="chip">
+                  {t}
+                </span>
+              ))}
+              <span>修改于 {formatTime(e.updatedAt)}</span>
+            </p>
+            <EntityContent entity={e} preferredNoteTab={NOTE_TAB_ORDER.find((t) => hits?.includes(t))} />
+          </div>
         ) : null}
       </div>
     </Dialog>

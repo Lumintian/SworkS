@@ -3,7 +3,7 @@
  * 在现有的原生 Dialog 里渲染 cmdk 的 <Command>，全站只有一套对话框。
  */
 import { Command } from 'cmdk';
-import { BookOpen, FilePlus2, Hash, Inbox, Library, Plus, Search, SlidersHorizontal, Tags, Trash2, Archive, FileText, UserRound, Users } from 'lucide-react';
+import { BookOpen, FilePlus2, Hash, Inbox, Library, NotebookPen, NotebookText, Plus, Search, SlidersHorizontal, Tags, Trash2, Archive, FileText, UserRound, Users } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ListResponse } from '@shared/api';
 import { getJSON } from '../lib/api';
@@ -79,10 +79,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: 'new-problem', group: '新建', label: '收一道题', icon: <Plus size={15} />, keywords: 'new 新建 题目', run: () => go(`/problems/new?id=${newId()}`) },
       { id: 'new-material', group: '新建', label: '收一份资料', icon: <FilePlus2 size={15} />, keywords: 'new 新建 资料', run: () => go(`/materials/new?id=${newId()}`) },
       { id: 'new-inbox', group: '新建', label: '收进收件箱', icon: <Inbox size={15} />, keywords: 'inbox', run: () => go(`/materials/new?id=${newId()}&status=inbox`) },
+      { id: 'new-lesson', group: '新建', label: '新建教案', icon: <NotebookPen size={15} />, keywords: 'new 新建 教案 lesson', run: () => go(`/lessons/new?id=${newId()}`) },
       { id: 'go-problems', group: '前往', label: '题目', icon: <BookOpen size={15} />, keywords: 'problems', run: () => go('/problems') },
       { id: 'go-materials', group: '前往', label: '资料', icon: <Library size={15} />, keywords: 'materials', run: () => go('/materials') },
       { id: 'go-inbox', group: '前往', label: '收件箱', icon: <Inbox size={15} />, keywords: 'inbox', run: () => go('/inbox') },
       { id: 'go-manage', group: '前往', label: '数据管理', hint: '属性与考点、学科、学段、标签', icon: <SlidersHorizontal size={15} />, keywords: 'manage 管理 改名 合并', run: () => go('/manage') },
+      { id: 'go-lessons', group: '前往', label: '教案', icon: <NotebookText size={15} />, keywords: 'lessons 教案', run: () => go('/lessons') },
       { id: 'go-students', group: '前往', label: '学生', icon: <Users size={15} />, keywords: 'students', run: () => go('/students') },
       ...(students.data ?? []).map<Entry>((s) => ({
         id: `student-${s.id}`,

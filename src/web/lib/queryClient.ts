@@ -23,7 +23,7 @@ export function invalidateWrites(e: WriteEvent = {}): void {
  */
 export const CATALOG_ONLY: WriteEvent = { problems: [], materials: [] };
 
-const KEYS = ['list', 'nav', 'catalog', 'manage', 'students', 'attempts', 'entity'];
+const KEYS = ['list', 'nav', 'catalog', 'manage', 'students', 'attempts', 'lessons', 'entity'];
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 function invalidateAll(): void {

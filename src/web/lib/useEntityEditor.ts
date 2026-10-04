@@ -1,5 +1,5 @@
 /**
- * 题目/资料编辑页的共用状态：加载、草稿、未保存判断、保存（版本条件更新）、冲突、远程图片状态轮询。
+ * 题目/资料/教案编辑页的共用状态：加载、草稿、未保存判断、保存（版本条件更新）、冲突、远程图片状态轮询。
  * 只有服务端返回成功才显示“已保存”；失败时草稿保持不变，可重试或复制。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -15,14 +15,14 @@ export type SaveState =
   | { kind: 'saved'; at: Date }
   | { kind: 'error'; message: string; code: string };
 
-interface EntityBase extends Refs {
+interface EntityBase extends Partial<Refs> {
   id: string;
   version: number;
   deletedAt: string | null;
 }
 
 export interface EntityEditorOptions<D, E extends EntityBase> {
-  collection: 'problems' | 'materials';
+  collection: 'problems' | 'materials' | 'lessons';
   id: string;
   isNew: boolean;
   empty: () => D;
@@ -103,14 +103,16 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
     const o = optsRef.current;
     const payload = o.toPayload(draftRef.current);
     const sentRaw = [...rawInputIds.current];
+    // 教案没有原始输入（不收录粘贴的内容）
+    const raw = collection === 'lessons' ? {} : { rawInputIds: sentRaw };
     try {
       let res: SaveResult<E>;
       if (isNewRef.current) {
-        res = await sendJSON<SaveResult<E>>('POST', `/api/${collection}`, { id, ...payload, rawInputIds: sentRaw });
+        res = await sendJSON<SaveResult<E>>('POST', `/api/${collection}`, { id, ...payload, ...raw });
       } else {
         res = await sendJSON<SaveResult<E>>('PUT', `/api/${collection}/${id}`, {
           ...payload,
-          rawInputIds: sentRaw,
+          ...raw,
           expectedVersion: versionRef.current,
         });
       }
@@ -184,7 +186,7 @@ export function useEntityEditor<D, E extends EntityBase>(opts: EntityEditorOptio
     () =>
       onWrite((ev, fromOtherTab) => {
         if (!fromOtherTab || isNewRef.current || saving.current) return;
-        const scoped = ev.problems !== undefined || ev.materials !== undefined;
+        const scoped = ev.problems !== undefined || ev.materials !== undefined || ev.lessons !== undefined;
         if (scoped && !(ev[collection] ?? []).includes(id)) return;
         // 服务端事件：本页自己保存的、或版本与本页一致（只重建了检索投影）的，不用重新读取
         if (ev.originClient === TAB_ID || ev.versions?.[id] === versionRef.current) return;

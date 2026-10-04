@@ -26,7 +26,7 @@ const CHANGED = 0;
 const CREATED = 1;
 const REINDEX_ONLY = 2;
 
-type RecordKind = 'entity' | 'catalog' | 'attempt' | 'rawInput' | 'remoteImage';
+type RecordKind = 'entity' | 'catalog' | 'attempt' | 'lesson' | 'rawInput' | 'remoteImage';
 
 interface ChangeRow {
   kind: RecordKind;
@@ -101,6 +101,7 @@ class ChangeLog {
     const parts = new Set<CatalogPart>();
     const students = new Set<string>();
     const attemptProblems = new Set<string>();
+    const lessons = new Map<string, number[]>();
     const rawIds: string[] = [];
     const assetIds = new Set<string>();
     const remoteIds = new Set<string>();
@@ -121,6 +122,12 @@ class ChangeLog {
           if (r.a) students.add(r.a);
           if (r.b) attemptProblems.add(r.b);
           break;
+        case 'lesson': {
+          const f = lessons.get(r.a!);
+          if (f) f.push(r.flag);
+          else lessons.set(r.a!, [r.flag]);
+          break;
+        }
         case 'rawInput':
           rawIds.push(r.a!);
           if (r.b) assetIds.add(r.b);
@@ -154,6 +161,16 @@ class ChangeLog {
     if (students.size || attemptProblems.size) {
       this.bus.emit('attempts.changed', { studentIds: [...students], problemIds: [...attemptProblems], origin });
     }
+    if (lessons.size) {
+      const current = this.db
+        .prepare('SELECT id, write_version, deleted_at FROM lessons WHERE id IN (SELECT value FROM json_each(?))')
+        .all(JSON.stringify([...lessons.keys()])) as { id: string; write_version: number; deleted_at: string | null }[];
+      this.bus.emit('lessons.changed', {
+        lessons: current.map((r) => ({ id: r.id, version: r.write_version, deleted: r.deleted_at !== null })),
+        created: [...lessons].filter(([, fs]) => fs.includes(CREATED)).map(([id]) => id),
+        origin,
+      });
+    }
     if (rawIds.length) this.bus.emit('rawInputs.created', { ids: rawIds, assetIds: [...assetIds], origin });
     if (remoteIds.size) this.bus.emit('remoteImages.changed', { ids: [...remoteIds], origin });
   }
@@ -184,6 +201,11 @@ export function recordCatalog(db: DB, part: CatalogPart): void {
 /** 作答记录变化（不影响题目版本）。 */
 export function recordAttempt(db: DB, studentId: string | null, problemId: string | null): void {
   logs.get(db)?.record('attempt', studentId, problemId);
+}
+
+/** 教案变化（已递增教案版本，或新建）。 */
+export function recordLesson(db: DB, lessonId: string, how: 'changed' | 'created' = 'changed'): void {
+  logs.get(db)?.record('lesson', lessonId, null, how === 'created' ? CREATED : CHANGED);
 }
 
 export function recordRawInput(db: DB, rawInputId: string, assetId: string | null): void {

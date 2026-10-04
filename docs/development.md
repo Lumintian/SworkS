@@ -63,7 +63,7 @@ pnpm exec playwright test tests/e2e/capture.spec.ts -g "两个页面"
 
 ## 修改数据库结构
 
-1. 新增 `src/server/db/schema-vN.ts` 并在 `migrations.ts` 追加迁移（版本号递增）。不要修改已发布的迁移（`schema-v1.ts`…`schema-v4.ts`）。迁移里只写 SQL 与固定数据，不调用业务代码。
+1. 新增 `src/server/db/schema-vN.ts` 并在 `migrations.ts` 追加迁移（版本号递增）。不要修改已发布的迁移（`schema-v1.ts`…`schema-v5.ts`）。迁移里只写 SQL 与固定数据，不调用业务代码。
 2. 更新 [schema.md](schema.md)。
 3. 更新备份格式：在 `services/backupFormat.ts` 新增 `RECORD_TABLES_VN`（在上一版基础上追加，旧版本定义保持冻结）、`ORDER_BY` 与 `BACKUP_VERSIONS` 的一行；递增 `BACKUP_SCHEMA_VERSION`。恢复会先建出备份对应版本的库再走迁移链，一般不需要额外代码；新表若由迁移写入了默认数据，恢复时会被统一清空再写入备份内容。更新 [backup-format.md](backup-format.md)。
 4. 如果新增的数据需要参与搜索，更新 `services/search.ts` 的投影。

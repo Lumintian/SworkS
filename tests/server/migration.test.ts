@@ -98,3 +98,39 @@ describe('从 v3 升级到 v4', () => {
     expect(p.rawInputs[0]).toMatchObject({ id: rid, original: null });
   });
 });
+
+describe('从 v4 升级到 v5', () => {
+  it('有数据的 v4 库：写安全备份；新增空的教案表，原有题目可以组成教案', async () => {
+    const dir = path.join(await makeTempDir(), 'data');
+    const v4 = await openLibrary(dir, { migrations: MIGRATIONS.slice(0, 4) });
+    const now = new Date().toISOString();
+    const pid = '44444444-4444-4444-8444-444444444444';
+    v4.db.prepare('INSERT INTO problems (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(pid, 'v4 的题', now, now);
+    expect(v4.db.pragma('user_version', { simple: true })).toBe(4);
+    v4.close();
+
+    const v5 = await openLibrary(dir);
+    opened.push(v5);
+    expect(v5.migration).toMatchObject({ from: 4, to: LATEST_SCHEMA_VERSION });
+    expect(v5.migration.safetyBackup).toMatch(new RegExp(`pre-migration-v4-to-v${LATEST_SCHEMA_VERSION}-.*\\.sqlite3$`));
+    expect(v5.db.prepare('SELECT COUNT(*) AS n FROM lessons').get()).toEqual({ n: 0 });
+    expect(v5.db.prepare('SELECT COUNT(*) AS n FROM lesson_items').get()).toEqual({ n: 0 });
+    // 同一道题在一份教案里只能出现一次，位置不能重复
+    v5.db.prepare('INSERT INTO lessons (id, created_at, updated_at) VALUES (?, ?, ?)').run('l1', now, now);
+    v5.db.prepare('INSERT INTO lesson_items (lesson_id, problem_id, position, created_at) VALUES (?, ?, 0, ?)').run('l1', pid, now);
+    expect(() => v5.db.prepare('INSERT INTO lesson_items (lesson_id, problem_id, position, created_at) VALUES (?, ?, 1, ?)').run('l1', pid, now)).toThrow(
+      /UNIQUE/,
+    );
+    expect(v5.db.pragma('foreign_key_check')).toEqual([]);
+    v5.db.prepare('DELETE FROM lesson_items').run();
+    v5.db.prepare('DELETE FROM lessons').run();
+    v5.close();
+    opened.pop();
+
+    t = await makeTestApp({ dataDir: dir });
+    const lid = '88888888-8888-4888-8888-888888888888';
+    const res = await t.json('POST', '/api/lessons', { id: lid, items: [{ problemId: pid }] });
+    expect(res.status).toBe(201);
+    expect(res.body.entity.items).toEqual([expect.objectContaining({ problemId: pid, title: 'v4 的题', deleted: false })]);
+  });
+});

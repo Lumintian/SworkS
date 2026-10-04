@@ -14,6 +14,7 @@ import {
   Inbox,
   Info,
   Library,
+  NotebookText,
   Plus,
   Search,
   Settings,
@@ -29,7 +30,7 @@ import { errorMessage, loadSession, sendJSON } from '../lib/api';
 import { runBatch } from '../lib/batch';
 import { daysSince, newId } from '../lib/format';
 import { MOD_LABEL } from '../lib/hotkeys';
-import { collectionOfPath, listParams, listPathOf, useNav, useStudents, type Collection } from '../lib/queries';
+import { collectionOfPath, listParams, listPathOf, useLessons, useNav, useStudents, type Collection } from '../lib/queries';
 import { Link, useRouter } from '../lib/router';
 import { propCondition, tagCondition, useQueryContext } from '../lib/queryText';
 import { propertiesFor } from '../lib/useCatalog';
@@ -147,6 +148,7 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
   const onListPage = path === listPath || (path === '/' && listPath === '/problems');
   const nav = useNav(collection);
   const students = useStudents();
+  const lessons = useLessons();
   const qctx = useQueryContext();
   const { catalog } = qctx;
   const scope = collection === 'problems' ? 'problem' : 'material';
@@ -321,6 +323,14 @@ export function NavPane({ onOpenPalette }: { onOpenPalette: () => void }) {
           count={data?.library.inbox ? <span className="chip chip-warn ml-auto px-2 py-0 text-xs">{data.library.inbox}</span> : null}
         >
           收件箱
+        </NavItem>
+        <NavItem
+          to="/lessons"
+          icon={<NotebookText size={17} />}
+          match={(p) => p.startsWith('/lessons')}
+          count={lessons.data ? <span className="tree-count">{lessons.data.length}</span> : null}
+        >
+          教案
         </NavItem>
         <NavItem to="/students" icon={<Users size={17} />} match={(p) => p === '/students'} count={students.data ? <span className="tree-count">{students.data.length}</span> : null}>
           学生

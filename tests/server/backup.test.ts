@@ -90,6 +90,17 @@ async function seed(t: TestApp) {
   });
   const trashed = newId();
   await t.json('POST', '/api/problems', { id: trashed, title: '回收站里的题', blocks: [{ id: newId(), kind: 'image', assetId: shared.asset.id }] });
+  // 教案（v5）：引用的题之后进了回收站，引用保留；另有一份教案在回收站
+  const lesson = newId();
+  await t.json('POST', '/api/lessons', {
+    id: lesson,
+    title: '函数 · 第 1 讲',
+    note: '先讲定义域',
+    items: [{ problemId: trashed }, { problemId: pid, note: '从定义域引入' }],
+  });
+  const trashedLesson = newId();
+  await t.json('POST', '/api/lessons', { id: trashedLesson, items: [{ problemId: pid }] });
+  await t.request('DELETE', `/api/lessons/${trashedLesson}`);
   await t.request('DELETE', `/api/problems/${trashed}`);
   // 属性：考点树里子节点比父节点先创建（先建“单调性”，再建“函数”并把前者移到其下）
   const defs = (await t.json('GET', '/api/properties')).body as { id: string; preset: string | null; options: { id: string; label: string }[] }[];
@@ -131,7 +142,7 @@ async function seed(t: TestApp) {
   db.prepare(
     'INSERT INTO saved_searches (id, scope, name, query_json, sort, position, show_in_nav, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)',
   ).run(newId(), 'problem', '函数错题', JSON.stringify({ v: 1, text: 'tag:函数', ast: null }), null, now, now);
-  return { pid, mid, trashed, deletedNote };
+  return { pid, mid, trashed, deletedNote, lesson, trashedLesson };
 }
 
 async function makeBackup(t: TestApp): Promise<string> {
@@ -192,6 +203,12 @@ describe('全库备份与恢复往返', () => {
     expect(after.notes.find((n) => n.type === 'answer')!.seq).toBe(2);
     expect(after.raw_inputs.filter((r) => r.original_mime === 'image/heic')).toHaveLength(1);
     expect(after.saved_searches.map((x) => x.name)).toEqual(['函数错题']);
+    expect(after.lessons.find((l) => l.id === seeded.lesson)).toMatchObject({ title: '函数 · 第 1 讲', note: '先讲定义域', deleted_at: null });
+    expect(after.lessons.find((l) => l.id === seeded.trashedLesson)!.deleted_at).not.toBeNull();
+    expect(after.lesson_items.filter((i) => i.lesson_id === seeded.lesson).map((i) => [i.problem_id, i.position, i.note])).toEqual([
+      [seeded.trashed, 0, null],
+      [seeded.pid, 1, '从定义域引入'],
+    ]);
     // 附件字节一致
     for (const a of after.assets) {
       const src = path.join(t.lib.paths.assets, a.rel_path);
@@ -212,6 +229,12 @@ describe('全库备份与恢复往返', () => {
     expect(search.body.items.map((i: any) => i.id)).toEqual([seeded.pid]);
     const trash = await t.json('GET', '/api/trash');
     expect(trash.body.problems[0].id).toBe(seeded.trashed);
+    expect(trash.body.lessons.map((l: any) => l.id)).toEqual([seeded.trashedLesson]);
+    const lesson = (await t.json('GET', `/api/lessons/${seeded.lesson}`)).body;
+    expect(lesson.items.map((i: any) => [i.problemId, i.deleted])).toEqual([
+      [seeded.trashed, true],
+      [seeded.pid, false],
+    ]);
   });
 
   it('再次备份恢复后的库，逻辑数据仍一致（ZIP 字节可以不同）', async () => {

@@ -23,6 +23,8 @@ export interface ServerEvents {
   'entities.changed': { problems: EntityRef[]; materials: EntityRef[]; created: string[]; reindexOnly: string[]; origin: Origin };
   'catalog.changed': { parts: CatalogPart[]; origin: Origin };
   'attempts.changed': { studentIds: string[]; problemIds: string[]; origin: Origin };
+  /** 教案变化（版本与题目无关）。 */
+  'lessons.changed': { lessons: EntityRef[]; created: string[]; origin: Origin };
   'rawInputs.created': { ids: string[]; assetIds: string[]; origin: Origin };
   'remoteImages.changed': { ids: string[]; origin: Origin };
   'server.started': { url: string; bootId: string };
@@ -33,5 +35,12 @@ export interface ServerEvents {
 export type ServerEventType = keyof ServerEvents;
 
 /** 会推送给页面（SSE）的变更事件。 */
-export const CHANGE_EVENT_TYPES = ['entities.changed', 'catalog.changed', 'attempts.changed', 'rawInputs.created', 'remoteImages.changed'] as const;
+export const CHANGE_EVENT_TYPES = [
+  'entities.changed',
+  'catalog.changed',
+  'attempts.changed',
+  'lessons.changed',
+  'rawInputs.created',
+  'remoteImages.changed',
+] as const;
 export type ChangeEventType = (typeof CHANGE_EVENT_TYPES)[number];

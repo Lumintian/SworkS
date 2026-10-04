@@ -17,7 +17,7 @@ export const BACKUP_FORMAT = 'sworks-backup';
 /** library_meta 中只描述本机派生数据的键，不写入备份（恢复后会重建）。 */
 export const RUNTIME_META_KEYS: ReadonlySet<string> = new Set(['search_index_version']);
 export const RECORDS_FORMAT = 'sworks-records';
-export const BACKUP_SCHEMA_VERSION = 4;
+export const BACKUP_SCHEMA_VERSION = 5;
 
 const str = z.string();
 const nstr = z.string().nullable();
@@ -240,8 +240,33 @@ export const RECORD_TABLES_V4 = {
     .strict(),
 } as const;
 
+/** v5：v4 加上教案（按引用组合题目）。 */
+export const RECORD_TABLES_V5 = {
+  ...RECORD_TABLES_V4,
+  lessons: z
+    .object({
+      id: uuid,
+      title: nstr,
+      note: nstr,
+      created_at: iso,
+      updated_at: iso,
+      deleted_at: niso,
+      write_version: int.min(1),
+    })
+    .strict(),
+  lesson_items: z
+    .object({
+      lesson_id: uuid,
+      problem_id: uuid,
+      position: int,
+      note: nstr,
+      created_at: iso,
+    })
+    .strict(),
+} as const;
+
 /** 当前版本写出的表。 */
-export const RECORD_TABLES = RECORD_TABLES_V4;
+export const RECORD_TABLES = RECORD_TABLES_V5;
 
 type TableSchemas = Record<string, z.ZodType>;
 
@@ -251,6 +276,7 @@ export const BACKUP_VERSIONS: Record<number, { dbSchemaVersion: number; tables: 
   2: { dbSchemaVersion: 2, tables: RECORD_TABLES_V2 },
   3: { dbSchemaVersion: 3, tables: RECORD_TABLES_V3 },
   4: { dbSchemaVersion: 4, tables: RECORD_TABLES_V4 },
+  5: { dbSchemaVersion: 5, tables: RECORD_TABLES_V5 },
 };
 
 export type RecordTable = keyof typeof RECORD_TABLES;
@@ -283,6 +309,8 @@ const ORDER_BY: Record<RecordTable, string> = {
   students: 'created_at, id',
   student_attempts: 'attempted_at, id',
   saved_searches: 'scope, position, id',
+  lessons: 'created_at, id',
+  lesson_items: 'lesson_id, position',
 };
 
 /**
@@ -523,7 +551,7 @@ export const BACKUP_README = `SworkS 完整备份
 内容：
 - manifest.json   格式标识、版本、库 ID、记录与附件数量、校验信息、未归档远程图片摘要
 - records.json    全部逻辑记录（题目、资料、内容块、笔记、标签、自定义属性与考点、来源、原始输入、
-                  学生与作答记录、回收站状态等）
+                  学生与作答记录、教案、回收站状态等）
 - assets/<sha256> 所有附件的原始字节（按内容哈希命名，类型见 records.json 中 assets 表）
 
 恢复（需先停止 SworkS 服务，并恢复到一个新的空目录）：

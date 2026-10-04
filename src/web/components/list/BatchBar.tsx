@@ -1,4 +1,4 @@
-/** 多选后的批量操作栏：标签、学科、学段、整理状态、导出、移到回收站；可撤销的操作在提示里提供“撤销”。 */
+/** 多选后的批量操作栏：标签、学科、学段、整理状态、记录作答、组成教案、导出、移到回收站；可撤销的操作在提示里提供“撤销”。 */
 import { ChevronDown, ClipboardCheck, Download, GraduationCap, Hash, Layers, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import type { BatchAction, BatchResultDTO, ListItemDTO } from '@shared/api';
@@ -13,6 +13,7 @@ import { useCatalog } from '../../lib/useCatalog';
 import { DropdownContent, DropdownItem, DropdownLabel, DropdownMenu, DropdownSeparator, DropdownTrigger, Popover, PopoverContent, PopoverTrigger } from '../Menu';
 import { useConfirm, useToast } from '../ui';
 import { TagLabel } from '../TagLabel';
+import { BatchLessonMenu } from '../lessons/LessonBits';
 import { AttemptForm, attemptPayload } from '../students/AttemptForm';
 import { BatchProperty } from './BatchProperty';
 import { TagPicker } from './TagPicker';
@@ -197,6 +198,8 @@ export function BatchBar({
           </PopoverContent>
         </Popover>
       ) : null}
+
+      {collection === 'problems' ? <BatchLessonMenu ids={ids} /> : null}
 
       {collection === 'problems' ? (
         <button

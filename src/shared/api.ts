@@ -333,6 +333,43 @@ export const attemptListQuerySchema = z.object({
   limit: z.string().optional().transform((v) => (v && /^\d+$/.test(v) ? Number(v) : undefined)),
 });
 
+// ---------- 教案 ----------
+
+/** 一份教案最多引用的题目数。 */
+export const MAX_LESSON_ITEMS = 300;
+
+export const lessonItemInputSchema = z
+  .object({
+    problemId: id,
+    /** 这道题的讲解要点（纯文字） */
+    note: optionalText(4_000),
+  })
+  .strict();
+export type LessonItemInput = z.infer<typeof lessonItemInputSchema>;
+
+const lessonFields = {
+  title: optionalText(300),
+  note: optionalText(20_000),
+  /** 按顺序排列的题目引用；同一道题只能出现一次 */
+  items: z.array(lessonItemInputSchema).max(MAX_LESSON_ITEMS).default([]),
+};
+
+export const lessonCreateSchema = z.object({ id, ...lessonFields }).strict();
+export type LessonCreateInput = z.input<typeof lessonCreateSchema>;
+
+export const lessonUpdateSchema = z
+  .object({ ...lessonFields, expectedVersion: z.number().int().min(1) })
+  .strict();
+export type LessonUpdateInput = z.input<typeof lessonUpdateSchema>;
+
+/** 把题目追加到教案末尾（已在教案里的跳过）。 */
+export const lessonAddItemsSchema = z
+  .object({ problemIds: z.array(id).min(1).max(MAX_LESSON_ITEMS) })
+  .strict();
+
+/** GET /api/lessons 的查询参数：problemId 只列出引用了这道题的教案。 */
+export const lessonListQuerySchema = z.object({ problemId: lenientUuid });
+
 export const DICT_KINDS = ['subject', 'stage'] as const;
 export type DictKind = (typeof DICT_KINDS)[number];
 
@@ -616,6 +653,48 @@ export interface PropertyTypeChangeDTO {
   undoId?: string;
 }
 
+/** 教案里的一道题：引用的题目当前的显示信息，加上讲解要点。 */
+export interface LessonItemDTO {
+  problemId: string;
+  note: string | null;
+  title: string | null;
+  summary: string;
+  subject: string | null;
+  stage: string | null;
+  /** 题目在回收站中（引用保留） */
+  deleted: boolean;
+}
+
+export interface LessonDTO {
+  id: string;
+  title: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  version: number;
+  items: LessonItemDTO[];
+}
+
+export interface LessonListItemDTO {
+  id: string;
+  title: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  problemCount: number;
+  /** 前几道题的标题或摘要 */
+  preview: string[];
+}
+
+export interface LessonAddItemsResultDTO {
+  lesson: LessonDTO;
+  added: number;
+  /** 已在教案里而跳过的题数 */
+  existing: number;
+}
+
 export interface OutlineImportResultDTO {
   created: number;
   existing: number;
@@ -797,6 +876,7 @@ export interface TagManageDTO {
 export interface TrashDTO {
   problems: { id: string; title: string | null; summary: string; deletedAt: string }[];
   materials: { id: string; title: string | null; summary: string; deletedAt: string }[];
+  lessons: { id: string; title: string | null; problemCount: number; deletedAt: string }[];
   notes: {
     id: string;
     problemId: string;

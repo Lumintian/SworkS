@@ -4,6 +4,7 @@ import type { ProblemDTO, SaveResult } from '@shared/api';
 import { AttributeBar } from '../components/AttributeBar';
 import { BlocksEditor, useMarkdownImageUpload, type ContentIO } from '../components/BlocksEditor';
 import { ChangedElsewhereBanner, ConflictDialog, RawInputsPanel, SourcesEditor } from '../components/EditorExtras';
+import { ProblemLessons } from '../components/lessons/LessonBits';
 import { NotesEditor } from '../components/NotesEditor';
 import { SaveBar, useSaveShortcut } from '../components/SaveBar';
 import { AttemptLog } from '../components/students/AttemptLog';
@@ -167,6 +168,8 @@ export function ProblemEditorPage({ id, isNew }: { id: string; isNew: boolean })
           </h2>
           <AttemptLog problemId={id} disabled={ed.isNew() || !entity} />
         </section>
+
+        <ProblemLessons problemId={id} enabled={!ed.isNew() && entity !== null} />
 
         <section aria-labelledby="sources-h" className="space-y-3">
           <h2 id="sources-h" className="text-lg font-semibold text-stone">

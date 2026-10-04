@@ -54,6 +54,20 @@ export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   multiselect: '多选',
 };
 
+/**
+ * 自定义属性可以改成的类型（内置属性不能改）。取值会跟着转换：
+ * 单选 ↔ 多选（改为单选时不能有对象选了多个）；单选/多选 → 文本（选项写成路径文字）；
+ * 文本 → 单选/多选（不同的文字变成选项）、数字或日期（全部都能读出来时）；数字/日期 → 文本。
+ */
+export const PROPERTY_TYPE_CHANGES: Record<PropertyType, readonly PropertyType[]> = {
+  select: ['multiselect', 'text'],
+  multiselect: ['select', 'text'],
+  text: ['select', 'multiselect', 'number', 'date'],
+  number: ['text'],
+  date: ['text'],
+  checkbox: [],
+};
+
 /** 预置属性：代码据此找到题型、难度、考点，名称可以改。 */
 export const PROPERTY_PRESETS = ['qtype', 'difficulty', 'knowledge'] as const;
 export type PropertyPreset = (typeof PROPERTY_PRESETS)[number];

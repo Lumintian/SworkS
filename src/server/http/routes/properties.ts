@@ -10,9 +10,11 @@ import {
   optionUpdateSchema,
   outlineImportSchema,
   propertyCreateSchema,
+  propertyTypeChangeSchema,
   propertyUpdateSchema,
 } from '../../../shared/api.js';
 import {
+  changePropertyType,
   createOption,
   createPropertyDef,
   deleteOption,
@@ -49,6 +51,10 @@ export const register: RegisterRoutes = (app, ctx) => {
   app.put('/api/properties/:id', async (c) => {
     const input = await body(c, propertyUpdateSchema);
     return c.json(updatePropertyDef(db, uuidParam(c), input, makeToucher(db)));
+  });
+  app.post('/api/properties/:id/type', async (c) => {
+    const input = await body(c, propertyTypeChangeSchema);
+    return c.json(changePropertyType(db, uuidParam(c), input.type, makeToucher(db), { dryRun: input.dryRun }));
   });
   app.post('/api/properties/:id/archive', (c) => c.json(setPropertyArchived(db, uuidParam(c), true, makeToucher(db))));
   app.post('/api/properties/:id/unarchive', (c) => c.json(setPropertyArchived(db, uuidParam(c), false, makeToucher(db))));

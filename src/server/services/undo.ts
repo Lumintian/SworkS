@@ -3,7 +3,7 @@
  * 在一个事务里确认受影响的行仍是操作刚结束时的样子，再换回操作前的样子，
  * 并对内容因此变化的题目/资料递增版本、重建检索投影。快照见 undoJournal.ts。
  */
-import type { DB } from '../db/connection.js';
+import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { recordCatalog } from '../events/changes.js';
 import { makeToucher } from './touch.js';
@@ -15,7 +15,7 @@ const DELETE_ORDER: UndoTable[] = ['problem_tags', 'material_tags', 'property_va
 const INSERT_ORDER: UndoTable[] = ['tags', 'dict_entries', 'problem_tags', 'material_tags', 'property_values'];
 
 function currentRows(db: DB, im: UndoImage): Row[] {
-  return tableMode(im.spec.table) === 'replace' ? readRows(db, im.spec) : readRows(db, im.spec, im.after.map((r) => r.id));
+  return tableMode(im.spec.table) === 'replace' ? readRows(db, im.spec) : readRows(db, im.spec, [...im.after, ...(im.created ?? [])].map((r) => r.id));
 }
 
 function insertRows(db: DB, table: UndoTable, rows: readonly Row[]): void {
@@ -46,7 +46,7 @@ export function applyUndo(db: DB, id: string): { label: string; affectedItems: n
     return db.transaction(() => {
       for (const part of rec.parts) recordCatalog(db, part);
       for (const im of rec.images) {
-        if (canonical(currentRows(db, im)) !== canonical(im.after)) {
+        if (canonical(currentRows(db, im)) !== canonical([...im.after, ...(im.created ?? [])])) {
           throw new AppError('CONFLICT', `“${rec.label}”之后这些数据又有改动，不能撤销`);
         }
       }
@@ -55,18 +55,19 @@ export function applyUndo(db: DB, id: string): { label: string; affectedItems: n
         const im = byTable.get(t);
         if (im) db.prepare(`DELETE FROM ${t} WHERE ${im.spec.where}`).run(...im.spec.params);
       }
-      // 选项：先把涉及的行都标为删除，再逐行改回，避免改回途中与尚未改回的行撞上“同级不重名”
+      // 选项：先把涉及的行（含操作新建的）都标为删除，再把原有的逐行改回，避免改回途中撞上“同级不重名”；新建的保持删除
       const opts = byTable.get('property_options');
       if (opts) {
         const mark = db.prepare('UPDATE property_options SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?');
-        for (const r of opts.after) mark.run('undo', r.id);
+        const now = nowIso();
+        for (const r of [...opts.after, ...(opts.created ?? [])]) mark.run(now, r.id);
         updateRows(db, 'property_options', opts.before);
       }
       for (const t of INSERT_ORDER) {
         const im = byTable.get(t);
         if (im) insertRows(db, t, im.before);
       }
-      for (const t of ['problems', 'materials', 'saved_searches'] as const) {
+      for (const t of ['property_defs', 'problems', 'materials', 'saved_searches'] as const) {
         const im = byTable.get(t);
         if (im) updateRows(db, t, im.before);
       }

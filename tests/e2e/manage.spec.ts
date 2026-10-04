@@ -204,3 +204,38 @@ test('属性：第一次建下级时说明“分层”的后果；左侧栏标�
   await page.getByRole('button', { name: '撤销', exact: true }).click();
   await expect.poll(async () => ((await apiGet(server!, `/api/properties/${diff.id}`)) as { showInNav: boolean }).showInNav).toBe(true);
 });
+
+test('属性改类型：文本改为单选前先预览影响；提示里可以撤销', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const session = (await apiGet(server, '/api/session')) as { csrfToken: string };
+  const pid = crypto.randomUUID();
+  const res = await fetch(`${server.url}/api/properties`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sworks-csrf': session.csrfToken, origin: server.url },
+    body: JSON.stringify({ id: pid, name: '出处', type: 'text', appliesProblem: true, appliesMaterial: false }),
+  });
+  expect(res.status).toBe(201);
+  const a = await seed(server, '甲', { properties: [{ propertyId: pid, text: '人教版' }] });
+  await seed(server, '乙', { properties: [{ propertyId: pid, text: '北师大版' }] });
+
+  await page.goto(`${server.url}/manage?tab=properties`);
+  await page.getByRole('list', { name: '属性列表' }).getByRole('listitem').filter({ hasText: '出处' }).getByRole('button', { name: '改类型' }).click();
+  const dialog = page.getByRole('dialog', { name: '修改“出处”的类型' });
+  await dialog.getByRole('radio', { name: /^数字/ }).check();
+  await expect(dialog.getByRole('status')).toContainText('不是数字');
+  await expect(dialog.getByRole('button', { name: '改为数字' })).toBeDisabled();
+  await dialog.getByRole('radio', { name: /^单选/ }).check();
+  await expect(dialog.getByRole('status')).toContainText('会改写 2 道题或资料的取值');
+  await expect(dialog.getByRole('status')).toContainText('新建 2 个选项');
+  await dialog.getByRole('button', { name: '改为单选' }).click();
+  await expect(page.getByText('“出处”已改为单选，改写了 2 项的取值')).toBeVisible();
+  const def = (await apiGet(server, `/api/properties/${pid}`)) as { type: string; options: { id: string; label: string }[] };
+  expect(def.type).toBe('select');
+  const pep = def.options.find((o) => o.label === '人教版')!.id;
+  expect((await apiGet(server, `/api/problems/${a}`)).properties).toEqual([{ propertyId: pid, optionIds: [pep] }]);
+
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect(page.getByText('已撤销，影响 2 项')).toBeVisible();
+  expect(((await apiGet(server, `/api/properties/${pid}`)) as { type: string }).type).toBe('text');
+  expect((await apiGet(server, `/api/problems/${a}`)).properties).toEqual([{ propertyId: pid, text: '人教版' }]);
+});

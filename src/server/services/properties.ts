@@ -9,8 +9,17 @@
  */
 import { recordCatalog } from '../events/changes.js';
 import { randomUUID } from 'node:crypto';
-import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, PropertyValueDTO, PropertyValueInput, UsageDTO } from '../../shared/api.js';
-import { PROPERTY_PRESETS, RESERVED_PROPERTY_NAMES, type PropertyPreset, type PropertyType } from '../../shared/constants.js';
+import type {
+  OutlineImportResultDTO,
+  PropertyDefDTO,
+  PropertyOptionDTO,
+  PropertyTypeChangeDTO,
+  PropertyValueDTO,
+  PropertyValueInput,
+  UsageDTO,
+} from '../../shared/api.js';
+import { PROPERTY_PRESETS, PROPERTY_TYPE_CHANGES, PROPERTY_TYPE_LABELS, RESERVED_PROPERTY_NAMES, type PropertyPreset, type PropertyType } from '../../shared/constants.js';
+import { normText } from '../../shared/query/normalize.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { ownerColumn, placeholders, type Owner, type OwnerKind } from './rows.js';
@@ -548,6 +557,174 @@ export function setPropertyArchived(db: DB, id: string, archived: boolean, touch
   })();
 }
 
+/** 试运行时用来回滚事务的标记。 */
+const DRY_RUN = Symbol('dry-run');
+
+/** 文本读成数字：全角半角都可以，例如“２０２４”“-3.5”。 */
+function parseNumber(text: string): number | null {
+  const t = normText(text).replace(/\s+/g, '');
+  return /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(t) ? Number(t) : null;
+}
+
+/** 文本读成日期 YYYY-MM-DD：也接受 2024/9/1、2024.9.1、2024年9月1日。 */
+function parseDate(text: string): string | null {
+  const m = /^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/.exec(normText(text).replace(/\s+/g, ''));
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return null;
+  return `${m[1]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/** 举几个例子放进错误信息 */
+const examples = (xs: readonly string[]) => `${xs.slice(0, 3).map((x) => `“${x.length > 20 ? `${x.slice(0, 20)}…` : x}”`).join('、')}${xs.length > 3 ? ` 等 ${xs.length} 个` : ''}`;
+
+/**
+ * 修改自定义属性的类型，取值跟着转换（规则见 PROPERTY_TYPE_CHANGES）。取值写法变了的对象（含回收站中的）
+ * 递增版本；常用检索里与新类型不再相符的条件标为失效。内置属性、已归档的属性不能改。
+ * 转换不了的情况（例如多选改单选时有对象选了多个）整体不做，并举例说明。dryRun 时执行后回滚，返回预览。
+ */
+export function changePropertyType(db: DB, id: string, to: PropertyType, touch: Toucher, opts: { dryRun?: boolean | undefined } = {}): PropertyTypeChangeDTO {
+  let result: PropertyTypeChangeDTO | undefined;
+  try {
+    db.transaction(() => {
+      recordCatalog(db, 'properties');
+      const d = getDef(db, id);
+      const label = (t: PropertyType) => PROPERTY_TYPE_LABELS[t];
+      if (d.preset) throw new AppError('VALIDATION', `“${d.name}”是内置属性，不能改类型`);
+      if (d.archived_at) throw new AppError('VALIDATION', `“${d.name}”已归档，取消归档后才能改类型`);
+      const none = { createdOptions: 0, removedOptions: 0, brokenSearches: 0, affectedItems: 0 };
+      if (d.type === to) {
+        result = { property: getPropertyDef(db, d.id), ...none };
+        return;
+      }
+      if (!PROPERTY_TYPE_CHANGES[d.type].includes(to)) throw new AppError('VALIDATION', `“${label(d.type)}”属性不能改为“${label(to)}”`);
+      const undo = opts.dryRun
+        ? null
+        : beginUndo(db, `“${d.name}”改为${label(to)}`, ['properties', 'savedSearches'], [
+            { table: 'property_defs', where: 'id = ?', params: [d.id] },
+            { table: 'property_options', where: 'property_id = ?', params: [d.id] },
+            { table: 'property_values', where: 'property_id = ?', params: [d.id] },
+            { table: 'saved_searches', where: 'deleted_at IS NULL', params: [] },
+          ]);
+      const rows = db.prepare('SELECT rowid, * FROM property_values WHERE property_id = ?').all(d.id) as ValueRow[];
+      const ownerOf = (r: ValueRow): Owner => (r.problem_id ? { kind: 'problem', id: r.problem_id } : { kind: 'material', id: r.material_id! });
+      const changed = new Map<string, Owner>();
+      const mark = (r: ValueRow) => {
+        const o = ownerOf(r);
+        changed.set(`${o.kind}:${o.id}`, o);
+      };
+      const fromOptions = OPTION_TYPES.includes(d.type);
+      const toOptions = OPTION_TYPES.includes(to);
+      let createdOptions = 0;
+      let removedOptions = 0;
+      const now = nowIso();
+
+      if (fromOptions && toOptions) {
+        if (to === 'select') {
+          const multi = db
+            .prepare(
+              `SELECT COALESCE(p.title, m.title) AS title FROM property_values v LEFT JOIN problems p ON p.id = v.problem_id LEFT JOIN materials m ON m.id = v.material_id
+               WHERE v.property_id = ? GROUP BY v.problem_id, v.material_id HAVING COUNT(*) > 1`,
+            )
+            .all(d.id) as { title: string | null }[];
+          if (multi.length) {
+            throw new AppError(
+              'VALIDATION',
+              `有 ${multi.length} 道题或资料选了不止一个“${d.name}”（${examples(multi.map((x) => x.title ?? '无标题'))}）。先让它们只留一个，再改为单选`,
+            );
+          }
+        }
+        // 取值本来就是选项：不用改写
+      } else if (to === 'text') {
+        const order = fromOptions ? new Map(optionTreeOf(db, d.id).ordered.map((o, i) => [o.id, { i, path: o.path }])) : null;
+        const byOwner = new Map<string, ValueRow[]>();
+        for (const r of rows) {
+          const k = `${r.problem_id ?? ''}|${r.material_id ?? ''}`;
+          byOwner.set(k, [...(byOwner.get(k) ?? []), r]);
+        }
+        const del = db.prepare('DELETE FROM property_values WHERE rowid = ?');
+        const ins = db.prepare('INSERT INTO property_values (problem_id, material_id, property_id, text_value) VALUES (?, ?, ?, ?)');
+        for (const list of byOwner.values()) {
+          let text: string;
+          if (order) {
+            text = list
+              .map((r) => order.get(r.option_id!))
+              .filter((x): x is { i: number; path: string } => Boolean(x))
+              .sort((a, b) => a.i - b.i)
+              .map((x) => x.path)
+              .join('、');
+          } else if (d.type === 'number') text = formatNumber(list[0]!.number_value!);
+          else text = list[0]!.text_value!;
+          for (const r of list) del.run(r.rowid);
+          if (text) ins.run(list[0]!.problem_id, list[0]!.material_id, d.id, text.slice(0, 2000));
+          mark(list[0]!);
+        }
+        if (fromOptions) {
+          removedOptions = db.prepare('UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE property_id = ? AND deleted_at IS NULL').run(now, now, d.id).changes;
+        }
+      } else if (toOptions) {
+        // 文本 → 选项：不同的文字（不区分大小写）各成一个顶层选项
+        const tooLong = rows.map((r) => r.text_value!.replace(/\s+/g, ' ').trim()).filter((t) => t.length > 60);
+        if (tooLong.length) throw new AppError('VALIDATION', `有 ${tooLong.length} 个取值超过 60 字，不能变成选项：${examples(tooLong)}`);
+        // 只差大小写的算同一个选项，名称用最常见的写法（一样多时取先出现的）
+        const spellings = new Map<string, Map<string, number>>();
+        for (const r of rows) {
+          const l = normalizeLabel(r.text_value!);
+          const m = spellings.get(l.toLowerCase()) ?? new Map<string, number>();
+          m.set(l, (m.get(l) ?? 0) + 1);
+          spellings.set(l.toLowerCase(), m);
+        }
+        const labels = [...spellings.values()]
+          .map((m) => [...m].reduce((best, x) => (x[1] > best[1] ? x : best))[0])
+          .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+        const ids = new Map<string, string>();
+        for (const l of labels) {
+          const found = siblingByLabel(db, d.id, null, l);
+          ids.set(l.toLowerCase(), found ? found.id : insertOption(db, randomUUID(), d.id, null, l));
+          if (!found) createdOptions++;
+        }
+        const set = db.prepare('UPDATE property_values SET option_id = ?, text_value = NULL WHERE rowid = ?');
+        for (const r of rows) {
+          set.run(ids.get(normalizeLabel(r.text_value!).toLowerCase())!, r.rowid);
+          mark(r);
+        }
+        // 多选：同一对象只可能有一个文本取值，不会重复
+      } else {
+        // 文本 → 数字 / 日期：全部都能读出来才转换
+        const parse = to === 'number' ? parseNumber : parseDate;
+        const bad = rows.filter((r) => parse(r.text_value!) === null).map((r) => r.text_value!);
+        if (bad.length) throw new AppError('VALIDATION', `有 ${bad.length} 个取值不是${to === 'number' ? '数字' : '日期（例如 2024-09-01）'}：${examples(bad)}。先改好这些取值再转换`);
+        const set =
+          to === 'number'
+            ? db.prepare('UPDATE property_values SET number_value = ?, text_value = NULL WHERE rowid = ?')
+            : db.prepare('UPDATE property_values SET text_value = ? WHERE rowid = ?');
+        for (const r of rows) {
+          const v = parse(r.text_value!);
+          if (to === 'number' || v !== r.text_value) set.run(v, r.rowid);
+          if (to === 'number' || v !== r.text_value) mark(r);
+        }
+        // 日期：写法本来就规范的取值不算改动
+      }
+
+      db.prepare('UPDATE property_defs SET type = ?, nested = ?, updated_at = ? WHERE id = ?').run(to, toOptions && d.nested ? 1 : 0, now, d.id);
+      // 常用检索：“未设置/已设置”对任何类型都有效，单选与多选之间选项条件也有效；其余条件标为失效
+      const brokenSearches = touch.rewriteSearches((q) => {
+        if (q.k !== 'prop' || q.propertyId !== d.id || q.test.t === 'none' || q.test.t === 'any') return q;
+        if (q.test.t === 'options' && toOptions) return q;
+        return { k: 'false', reason: `“${d.name}”已改为${label(to)}，这个条件需要重新设置` };
+      });
+      for (const o of changed.values()) touch.add(o, true);
+      touch.finish();
+      result = { property: getPropertyDef(db, d.id), affectedItems: changed.size, createdOptions, removedOptions, brokenSearches, ...(undo ? { undoId: undo.end() } : {}) };
+      if (opts.dryRun) throw DRY_RUN;
+    })();
+  } catch (err) {
+    if (err !== DRY_RUN) throw err;
+  }
+  return result!;
+}
+
 export function reorderPropertyDefs(db: DB, ids: readonly string[]): void {
   db.transaction(() => {
     recordCatalog(db, 'properties');
@@ -832,9 +1009,6 @@ export function mergeOptions(
     return { merged: topmost.length, affectedItems: affected.size, undoId: undo.end() };
   })();
 }
-
-/** 试运行时用来回滚事务的标记。 */
-const DRY_RUN = Symbol('dry-run');
 
 /**
  * 从大纲导入选项：每行一个，缩进或 Markdown 列表（- / * / + / 1.）表示层级，# 标题按级别表示层级。

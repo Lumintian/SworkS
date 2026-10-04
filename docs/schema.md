@@ -29,7 +29,7 @@ SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/sc
 | `raw_inputs` | 原始输入：粘贴的原文、原文件（asset）、原 URL、采集时间、所属对象与内容块。v4 起：收录时做了格式转换的文件另记 `original_mime`、`original_size`、`original_sha256`（三列同空同非空），原字节不保留 |
 | `remote_images` | 远程图片：URL（唯一）、归档状态（`pending`/`archived`/`failed`）、本地 asset、归档方式（下载/手动补传）、错误信息、尝试次数 |
 | `search_index` | 可重建的检索投影（小写化文本 + 字段来源），不进入备份。v2 起 `field` 不再有 CHECK 约束，新增检索字段不必重建表 |
-| `property_defs`（v2） | 自定义属性：名称（未归档的不区分大小写唯一）、类型（`text`/`number`/`date`/`checkbox`/`select`/`multiselect`，创建后不可改）、`nested`（选项成树；单选/多选可随时由平改为分层，有下级选项时不能改回；v4 起题型默认分层）、适用于题目/资料、`preset`（`qtype` 题型 / `difficulty` 难度 / `knowledge` 考点）、顺序、是否在导航显示、`archived_at` |
+| `property_defs`（v2） | 自定义属性：名称（未归档的不区分大小写唯一）、类型（`text`/`number`/`date`/`checkbox`/`select`/`multiselect`；自定义属性可以在数据管理里改类型，取值跟着转换，见 `shared/constants.ts#PROPERTY_TYPE_CHANGES`；内置属性不能改）、`nested`（选项成树；单选/多选可随时由平改为分层，有下级选项时不能改回；v4 起题型默认分层）、适用于题目/资料、`preset`（`qtype` 题型 / `difficulty` 难度 / `knowledge` 考点）、顺序、是否在导航显示、`archived_at` |
 | `property_options`（v2） | 单选/多选属性的选项：`parent_id` 构成树（复合外键保证父节点属于同一属性）、`label`（不含 `/`，同一父节点下未删除的不区分大小写唯一）、`position`、软删除 |
 | `property_values`（v2） | 属性取值：恰好属于一个题目或一个资料；`option_id`、`text_value`、`number_value` 三者恰好一个（勾选存 1，日期存文本 `YYYY-MM-DD`）。部分唯一索引保证选项不重复、标量属性每个对象只有一个值 |
 | `students`（v3） | 学生：姓名、学段/年级、备注、归档时间、`write_version` |
@@ -45,7 +45,7 @@ SQLite（better-sqlite3），全部表为 `STRICT`。定义见 `src/server/db/sc
 - 删除题目/资料/笔记为软删除（`deleted_at`），可在回收站恢复；移除内容块不会删除其原始附件文件，目前不做自动垃圾回收。
 - 属性选项与作答记录为软删除；属性定义只归档不删除；学生只归档不删除。
 - 在数据管理里删除标签：从所有对象（含回收站中的）解除挂接后，删除已没有任何引用的标签行。标签行本身不含内容，这是唯一会物理删除的记录。
-- 题目/资料的属性取值属于其内容：保存、批量操作、删除或合并选项都会递增 `write_version`；选项改名、移动只重建检索投影。已归档或不再适用的属性，其取值冻结保留。
+- 题目/资料的属性取值属于其内容：保存、批量操作、删除或合并选项、改属性类型时取值写法变了，都会递增 `write_version`；选项改名、移动只重建检索投影。已归档或不再适用的属性，其取值冻结保留。
 - 作答记录独立于题目内容：写入作答不改变题目的 `write_version` 与 `updated_at`。
 
 ## 迁移

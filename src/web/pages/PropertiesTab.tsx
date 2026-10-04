@@ -4,12 +4,13 @@
  * 选项是否分层不在这里勾选：在选项树里第一次建下级时确认（见 OptionTreeEditor）。
  */
 import { useQuery } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, Archive, ArchiveRestore, Check, Eye, EyeOff, ListTree, Pencil, Plus, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Archive, ArchiveRestore, Check, Eye, EyeOff, ListTree, Pencil, Plus, Shapes, X } from 'lucide-react';
 import { useState } from 'react';
 import type { PropertyDefDTO, UsageDTO } from '@shared/api';
-import { PROPERTY_TYPE_LABELS, PROPERTY_TYPES, type PropertyType } from '@shared/constants';
+import { PROPERTY_TYPE_CHANGES, PROPERTY_TYPE_LABELS, PROPERTY_TYPES, type PropertyType } from '@shared/constants';
 import { ContextContent, ContextItem, ContextMenu, ContextSeparator, ContextTrigger } from '../components/Menu';
 import { OptionTreeEditor } from '../components/props/OptionTreeEditor';
+import { TypeChangeDialog } from '../components/props/TypeChangeDialog';
 import { useConfirm, useToast } from '../components/ui';
 import { errorMessage, getJSON, sendJSON } from '../lib/api';
 import { newId } from '../lib/format';
@@ -100,6 +101,9 @@ export function PropertiesTab({ defs, initialSelected }: { defs: PropertyDefDTO[
   const archived = defs.filter((d) => d.archived);
   const [selectedId, setSelectedId] = useState<string | null>(() => live.find((d) => d.id === initialSelected)?.id ?? live.find((d) => d.preset === 'knowledge')?.id ?? null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [retyping, setRetyping] = useState<PropertyDefDTO | null>(null);
+  /** 能不能改类型；不能时给出原因 */
+  const retypeBlock = (d: PropertyDefDTO) => (d.preset ? '内置属性不能改类型' : PROPERTY_TYPE_CHANGES[d.type].length === 0 ? `“${PROPERTY_TYPE_LABELS[d.type]}”属性不能改成别的类型` : null);
   const selected = live.find((d) => d.id === selectedId) ?? null;
 
   const call = async (fn: () => Promise<unknown>, ok?: string) => {
@@ -220,6 +224,9 @@ export function PropertiesTab({ defs, initialSelected }: { defs: PropertyDefDTO[
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRenaming({ id: d.id, name: d.name })}>
                     <Pencil size={14} /> 改名
                   </button>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={Boolean(retypeBlock(d))} title={retypeBlock(d) ?? undefined} onClick={() => setRetyping(d)}>
+                    <Shapes size={14} /> 改类型
+                  </button>
                   <button type="button" className="btn btn-ghost btn-sm" disabled={Boolean(d.preset)} title={d.preset ? PRESET_ARCHIVE_HINT : undefined} onClick={() => void archive(d)}>
                     <Archive size={14} /> 归档
                   </button>
@@ -233,6 +240,9 @@ export function PropertiesTab({ defs, initialSelected }: { defs: PropertyDefDTO[
                 ) : null}
                 <ContextItem onSelect={() => setRenaming({ id: d.id, name: d.name })}>
                   <Pencil size={13} /> 改名
+                </ContextItem>
+                <ContextItem disabled={Boolean(retypeBlock(d))} onSelect={() => setRetyping(d)}>
+                  <Shapes size={13} /> {retypeBlock(d) ? `改类型（${retypeBlock(d)}）` : '改类型…'}
                 </ContextItem>
                 {hasOptions || d.type === 'checkbox' ? (
                   <ContextItem onSelect={() => void update(d, { showInNav: !d.showInNav }, d.showInNav ? '已不在左侧栏列出' : '已在左侧栏列出')}>
@@ -277,6 +287,7 @@ export function PropertiesTab({ defs, initialSelected }: { defs: PropertyDefDTO[
           <OptionTreeEditor def={selected} />
         </section>
       ) : null}
+      {retyping ? <TypeChangeDialog key={retyping.id} def={retyping} open onClose={() => setRetyping(null)} /> : null}
     </div>
   );
 }

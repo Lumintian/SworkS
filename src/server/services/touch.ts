@@ -7,6 +7,7 @@
  * 先收集、最后统一处理：一个操作可能分几步改同一个对象（例如多个选项依次合并到同一目标），
  * 边改边重建会把中间状态留在检索投影里。
  */
+import type { Q } from '../../shared/query/ast.js';
 import { nowIso, type DB } from '../db/connection.js';
 import { optionIndex } from './properties.js';
 import type { Owner } from './rows.js';
@@ -19,6 +20,8 @@ export interface Toucher {
   add(owner: Owner, bump: boolean): void;
   /** 选项 from 已合并到 into：常用检索里的条件跟着改指向 */
   optionMerged(from: string, into: string): void;
+  /** 立即改写常用检索的条件（例如属性改了类型）；返回改了几条。由这里转交是为了避免属性服务与检索形成循环依赖 */
+  rewriteSearches(fn: (q: Q) => Q): number;
   /** 处理已收集的对象；应在操作的事务结束前调用，可以多次调用 */
   finish(): void;
   /** 到目前为止递增过版本的对象数 */
@@ -38,6 +41,9 @@ export function makeToucher(db: DB): Toucher {
     },
     optionMerged(from, into) {
       merged.set(from, into);
+    },
+    rewriteSearches(fn) {
+      return rewriteSavedSearches(db, fn);
     },
     finish() {
       if (pending.size) {

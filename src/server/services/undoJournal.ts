@@ -13,6 +13,7 @@ import type { CatalogPart } from '../events/types.js';
  * 每张表怎样换回去：
  * - replace：按条件选出的整组行，撤销时删掉现在的、插回操作前的（挂接、取值、字典这类没有独立身份的行）；
  * - update：按主键逐行改回操作前的列值（行本身不会消失：软删除的选项、题目上的学科学段、常用检索）。
+ *   操作新建的行只允许是选项（例如文本属性改为单选时由取值建出的选项），撤销时把它们软删除。
  */
 const TABLES = {
   tags: { mode: 'replace', columns: ['id', 'name', 'created_at'] },
@@ -21,6 +22,7 @@ const TABLES = {
   dict_entries: { mode: 'replace', columns: ['kind', 'value', 'position'] },
   property_values: { mode: 'replace', columns: ['problem_id', 'material_id', 'property_id', 'option_id', 'text_value', 'number_value'] },
   property_options: { mode: 'update', columns: ['id', 'parent_id', 'label', 'position', 'updated_at', 'deleted_at'] },
+  property_defs: { mode: 'update', columns: ['id', 'type', 'nested', 'updated_at'] },
   problems: { mode: 'update', columns: ['id', 'subject', 'stage'] },
   materials: { mode: 'update', columns: ['id', 'subject', 'stage'] },
   saved_searches: { mode: 'update', columns: ['id', 'query_json', 'updated_at'] },
@@ -40,6 +42,8 @@ export interface UndoImage {
   spec: UndoSpec;
   before: Row[];
   after: Row[];
+  /** update 表里操作新建的行（只会是选项） */
+  created?: Row[];
 }
 
 export interface UndoRecord {
@@ -118,11 +122,14 @@ export function beginUndo(db: DB, label: string, parts: CatalogPart[], specs: re
           // 只留下真正改了的行；之后按主键比较、改回
           const after = new Map(readRows(db, spec, rows.map((r) => r.id)).map((r) => [r.id, r]));
           const diff = rows.filter((r) => JSON.stringify(r) !== JSON.stringify(after.get(r.id)));
-          if (diff.length) {
+          const known = new Set(rows.map((r) => r.id));
+          const created = readRows(db, spec).filter((r) => !known.has(r.id));
+          if (created.length && spec.table !== 'property_options') return undefined;
+          if (diff.length || created.length) {
             changed = true;
-            images.push({ spec, before: diff, after: diff.map((r) => after.get(r.id)!) });
+            images.push({ spec, before: diff, after: diff.map((r) => after.get(r.id)!), ...(created.length ? { created } : {}) });
           }
-          total += diff.length * 2;
+          total += diff.length * 2 + created.length;
         }
       }
       if (!changed || total > MAX_ROWS) return undefined;

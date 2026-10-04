@@ -222,6 +222,14 @@ export const propertyUpdateSchema = z
   })
   .strict();
 
+export const propertyTypeChangeSchema = z
+  .object({
+    type: z.enum(PROPERTY_TYPES),
+    /** 试运行：照常转换再回滚，返回会改动多少（预览） */
+    dryRun: z.boolean().optional(),
+  })
+  .strict();
+
 export const idListSchema = z.object({ ids: z.array(id).min(1).max(500) }).strict();
 
 export const optionCreateSchema = z
@@ -592,6 +600,20 @@ export interface AttemptSummaryDTO {
   lastResult: AttemptResult;
   lastAt: string;
   lastFelt: number | null;
+}
+
+/** 修改属性类型的结果（试运行时为预览）。 */
+export interface PropertyTypeChangeDTO {
+  property: PropertyDefDTO;
+  /** 取值改了写法的题目与资料数（含回收站中的） */
+  affectedItems: number;
+  /** 由文本取值新建的选项数 */
+  createdOptions: number;
+  /** 改为文本后不再使用、被删除的选项数 */
+  removedOptions: number;
+  /** 条件需要重新设置的常用检索数 */
+  brokenSearches: number;
+  undoId?: string;
 }
 
 export interface OutlineImportResultDTO {

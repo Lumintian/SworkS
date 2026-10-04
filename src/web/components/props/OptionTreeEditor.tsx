@@ -1,11 +1,11 @@
 /**
  * 选项树编辑（基于 ManageTree / headless-tree）：多选、右键菜单、拖动排序与改变上级、F2 或双击改名、Delete 删除；
- * 工具栏新建同级/下级、删除（含子树）、合并到其他选项、导入大纲。
+ * 工具栏新建同级/下级、删除（含子树）、合并到其他选项、导入大纲（带预览）、复制为大纲（可粘贴到别的库或属性里导入）。
  */
-import { useQuery } from '@tanstack/react-query';
-import { ArrowUpToLine, Eye, FileInput, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import type { PropertyDefDTO, PropertyOptionDTO, UsageDTO } from '@shared/api';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { ArrowUpToLine, ClipboardCopy, Eye, FileInput, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import type { OutlineImportResultDTO, PropertyDefDTO, PropertyOptionDTO, UsageDTO } from '@shared/api';
 import { errorMessage, getJSON, sendJSON } from '../../lib/api';
 import { newId } from '../../lib/format';
 import { invalidateWrites } from '../../lib/queryClient';
@@ -21,10 +21,20 @@ import { OptionPicker } from './OptionPicker';
 function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open: boolean; onClose: () => void }) {
   const toast = useToast();
   const [text, setText] = useState('');
-  const preview = text
-    .split(/\r?\n/)
-    .filter((l) => l.trim())
-    .slice(0, 12);
+  // 停顿后试运行一次（服务端执行后整体回滚），预览每一行会落到哪里、哪些已存在
+  const [debounced, setDebounced] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(text), 300);
+    return () => window.clearTimeout(timer);
+  }, [text]);
+  const preview = useQuery({
+    queryKey: ['outline-preview', def.id, debounced],
+    queryFn: () => sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: debounced, dryRun: true }),
+    enabled: open && debounced.trim() !== '',
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const shown = text.trim() ? preview.data : undefined;
   return (
     <Dialog
       open={open}
@@ -42,7 +52,7 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
             disabled={!text.trim()}
             onClick={async () => {
               try {
-                const r = await sendJSON<{ created: number; existing: number }>('POST', `/api/properties/${def.id}/import`, { outline: text });
+                const r = await sendJSON<OutlineImportResultDTO>('POST', `/api/properties/${def.id}/import`, { outline: text });
                 invalidateWrites();
                 toast(`已新建 ${r.created} 个选项，${r.existing} 个已存在`, 'success');
                 setText('');
@@ -52,7 +62,7 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
               }
             }}
           >
-            导入
+            {shown ? `导入（新建 ${shown.created} 个）` : '导入'}
           </button>
         </>
       }
@@ -61,14 +71,39 @@ function OutlineImportDialog({ def, open, onClose }: { def: PropertyDefDTO; open
         <p className="text-ink-soft">
           每行一个{def.nested ? '，用缩进、Markdown 列表（- / 1.）或 # 标题表示层级' : '（此属性不分层，层级会被展平）'}。已存在的同名选项会直接沿用，不会重复。
         </p>
-        <textarea
-          className="textarea min-h-[14rem]"
-          value={text}
-          aria-label="大纲内容"
-          placeholder={'# 函数\n- 函数的概念\n- 单调性\n  - 单调区间\n# 数列\n- 等差数列'}
-          onChange={(e) => setText(e.target.value)}
-        />
-        {preview.length ? <p className="text-xs text-ink-faint">共 {text.split(/\r?\n/).filter((l) => l.trim()).length} 行</p> : null}
+        <div className="grid gap-3 md:grid-cols-2">
+          <textarea
+            className="textarea min-h-[18rem]"
+            value={text}
+            aria-label="大纲内容"
+            placeholder={'# 函数\n- 函数的概念\n- 单调性\n  - 单调区间\n# 数列\n- 等差数列'}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <section className="card-flat max-h-[18rem] min-h-[18rem] overflow-y-auto px-3 py-2" aria-label="导入预览">
+            {!text.trim() ? (
+              <p className="py-6 text-center text-xs text-ink-faint">粘贴大纲后，这里显示导入后的层级。</p>
+            ) : preview.isError ? (
+              <p className="py-6 text-center text-xs text-terracotta">{errorMessage(preview.error)}</p>
+            ) : shown?.items ? (
+              <>
+                <p className="mb-1 text-xs text-ink-faint">
+                  将新建 {shown.created} 个{shown.existing ? `，沿用 ${shown.existing} 个已有选项` : ''}
+                  {shown.items.length < shown.created + shown.existing ? `（只预览前 ${shown.items.length} 行）` : ''}
+                </p>
+                <ul>
+                  {shown.items.map((it, i) => (
+                    <li key={i} className="flex items-center gap-2 py-0.5" style={{ paddingLeft: `${it.depth * 1.1}rem` }}>
+                      <span className={`truncate ${it.existing ? 'text-ink-faint' : 'text-ink'}`}>{it.path.split('/').at(-1)}</span>
+                      <span className={`flex-none text-[11px] ${it.existing ? 'text-ink-faint' : 'text-sage-deep'}`}>{it.existing ? '已有' : '新建'}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="py-6 text-center text-xs text-ink-faint">正在生成预览…</p>
+            )}
+          </section>
+        </div>
       </div>
     </Dialog>
   );
@@ -185,6 +220,17 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
     }
   };
 
+  /** 按树的顺序写成 Markdown 列表（缩进表示层级），与“导入大纲”的格式一致。 */
+  const copyOutline = async () => {
+    const outline = def.options.map((o) => `${'  '.repeat(o.depth)}- ${o.label}`).join('\n');
+    try {
+      await navigator.clipboard.writeText(outline);
+      toast(`已复制 ${def.options.length} 个选项的大纲，可以粘贴到“导入大纲”`, 'success');
+    } catch {
+      toast('无法写入剪贴板', 'error');
+    }
+  };
+
   const move = (ids: string[], parentId: string | null, index: number | undefined) =>
     void call(() => sendJSON('POST', '/api/property-options/move-many', { ids, parentId, index }));
 
@@ -217,7 +263,10 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
         <button type="button" className="btn btn-ghost btn-sm hover:!text-terracotta" disabled={selectedOptions.length === 0} onClick={() => void remove(selectedOptions)}>
           <Trash2 size={14} /> 删除{selectedOptions.length > 1 ? ` ${selectedOptions.length} 项` : ''}
         </button>
-        <button type="button" className="btn btn-sage btn-sm ml-auto" onClick={() => setImporting(true)}>
+        <button type="button" className="btn btn-ghost btn-sm ml-auto" disabled={def.options.length === 0} onClick={() => void copyOutline()}>
+          <ClipboardCopy size={14} /> 复制为大纲
+        </button>
+        <button type="button" className="btn btn-sage btn-sm" onClick={() => setImporting(true)}>
           <FileInput size={14} /> 导入大纲
         </button>
       </div>

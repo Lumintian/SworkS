@@ -812,44 +812,61 @@ export function mergeOptions(
   })();
 }
 
+/** 试运行时用来回滚事务的标记。 */
+const DRY_RUN = Symbol('dry-run');
+
 /**
  * 从大纲导入选项：每行一个，缩进或 Markdown 列表（- / * / + / 1.）表示层级，# 标题按级别表示层级。
- * 已存在的同名选项直接沿用。
+ * 已存在的同名选项直接沿用。dryRun 时照常执行再整体回滚，返回每一行会落到的位置（供预览）。
  */
-export function importOutline(db: DB, propertyId: string, outline: string): OutlineImportResultDTO {
-  return db.transaction(() => {
-    recordCatalog(db, 'properties');
-    const d = requireOptionDef(db, propertyId);
-    let created = 0;
-    let existing = 0;
-    const stack: { indent: number; id: string }[] = [];
-    for (const rawLine of outline.split(/\r?\n/)) {
-      if (!rawLine.trim()) continue;
-      const expanded = rawLine.replace(/\t/g, '    ');
-      const heading = /^\s*(#{1,6})\s+(.*)$/.exec(expanded);
-      let indent: number;
-      let text: string;
-      if (heading) {
-        // 标题总比列表项浅：# 为最外层，其下的列表项成为它的下级
-        indent = (heading[1]!.length - 10) * 100;
-        text = heading[2]!;
-      } else {
-        indent = expanded.length - expanded.trimStart().length;
-        text = expanded.trim().replace(/^([-*+•]|\d+[.)、]|[（(]\d+[)）])\s*/, '');
-      }
-      text = text.trim();
-      if (!text) continue;
-      const label = normalizeLabel(text.slice(0, 60));
-      while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
-      const parent = d.nested ? (stack.at(-1)?.id ?? null) : null;
-      const found = siblingByLabel(db, d.id, parent, label);
-      const id = found ? found.id : insertOption(db, randomUUID(), d.id, parent, label);
-      if (found) existing++;
-      else created++;
-      stack.push({ indent, id });
+export function importOutline(db: DB, propertyId: string, outline: string, opts: { dryRun?: boolean | undefined } = {}): OutlineImportResultDTO {
+  let result: OutlineImportResultDTO | undefined;
+  try {
+    db.transaction(() => {
+      recordCatalog(db, 'properties');
+      result = importOutlineTx(db, requireOptionDef(db, propertyId), outline, Boolean(opts.dryRun));
+      if (opts.dryRun) throw DRY_RUN;
+    })();
+  } catch (err) {
+    if (err !== DRY_RUN) throw err;
+  }
+  return result!;
+}
+
+function importOutlineTx(db: DB, d: DefRow, outline: string, withItems: boolean): OutlineImportResultDTO {
+  let created = 0;
+  let existing = 0;
+  const items: NonNullable<OutlineImportResultDTO['items']> = [];
+  const stack: { indent: number; id: string; path: string }[] = [];
+  for (const rawLine of outline.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    const expanded = rawLine.replace(/\t/g, '    ');
+    const heading = /^\s*(#{1,6})\s+(.*)$/.exec(expanded);
+    let indent: number;
+    let text: string;
+    if (heading) {
+      // 标题总比列表项浅：# 为最外层，其下的列表项成为它的下级
+      indent = (heading[1]!.length - 10) * 100;
+      text = heading[2]!;
+    } else {
+      indent = expanded.length - expanded.trimStart().length;
+      text = expanded.trim().replace(/^([-*+•]|\d+[.)、]|[（(]\d+[)）])\s*/, '');
     }
-    return { created, existing };
-  })();
+    text = text.trim();
+    if (!text) continue;
+    const label = normalizeLabel(text.slice(0, 60));
+    while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
+    const up = d.nested ? stack.at(-1) : undefined;
+    const parent = up?.id ?? null;
+    const found = siblingByLabel(db, d.id, parent, label);
+    const id = found ? found.id : insertOption(db, randomUUID(), d.id, parent, label);
+    if (found) existing++;
+    else created++;
+    const path = up ? `${up.path}/${label}` : label;
+    if (withItems && items.length < 2000) items.push({ path, depth: up ? path.split('/').length - 1 : 0, existing: Boolean(found) });
+    stack.push({ indent, id, path });
+  }
+  return withItems ? { created, existing, items } : { created, existing };
 }
 
 // ---------------------------------------------------------------- 列表筛选、排序与导航

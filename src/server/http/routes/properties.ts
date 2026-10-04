@@ -62,7 +62,7 @@ export const register: RegisterRoutes = (app, ctx) => {
   });
   app.post('/api/properties/:id/import', async (c) => {
     const input = await body(c, outlineImportSchema);
-    return c.json(importOutline(db, uuidParam(c), input.outline));
+    return c.json(importOutline(db, uuidParam(c), input.outline, { dryRun: input.dryRun }));
   });
 
   // 多选的批量操作（静态路径，先于 /:id 注册）

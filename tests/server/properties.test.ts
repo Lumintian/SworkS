@@ -341,6 +341,29 @@ describe('选项管理', () => {
     expect(again.body).toEqual({ created: 1, existing: 2 });
   });
 
+  it('大纲导入试运行：返回每一行的位置与是否已有，不写入任何选项', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    await t.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: '函数' });
+    const before = (await preset(t, 'knowledge')).options.length;
+    const r = await t.json('POST', `/api/properties/${kp.id}/import`, { outline: '# 函数\n- 单调性\n  - 单调区间\n# 数列\n- 函数', dryRun: true });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      created: 4,
+      existing: 1,
+      items: [
+        { path: '函数', depth: 0, existing: true },
+        { path: '函数/单调性', depth: 1, existing: false },
+        { path: '函数/单调性/单调区间', depth: 2, existing: false },
+        { path: '数列', depth: 0, existing: false },
+        { path: '数列/函数', depth: 1, existing: false },
+      ],
+    });
+    expect((await preset(t, 'knowledge')).options).toHaveLength(before);
+    const real = await t.json('POST', `/api/properties/${kp.id}/import`, { outline: '# 函数\n- 单调性' });
+    expect(real.body).toEqual({ created: 1, existing: 1 });
+  });
+
   it('归档属性：取值冻结，不出现在返回数据与检索中；预置属性不能归档；取消归档后恢复', async () => {
     t = await makeTestApp();
     const src = (await t.json('POST', '/api/properties', { id: newId(), name: '来源卷', type: 'text' })).body;

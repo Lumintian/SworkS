@@ -251,7 +251,13 @@ export const optionMoveManySchema = z
   })
   .strict();
 export const optionPathSchema = z.object({ path: z.string().min(1).max(400) }).strict();
-export const outlineImportSchema = z.object({ outline: z.string().min(1).max(200_000) }).strict();
+export const outlineImportSchema = z
+  .object({
+    outline: z.string().min(1).max(200_000),
+    /** 试运行：不写入，返回每一行会落到的位置（预览） */
+    dryRun: z.boolean().optional(),
+  })
+  .strict();
 
 // ---------- 学生与作答记录 ----------
 
@@ -589,6 +595,8 @@ export interface AttemptSummaryDTO {
 export interface OutlineImportResultDTO {
   created: number;
   existing: number;
+  /** 试运行时给出：每一行导入后的完整路径与层级、是否沿用已有选项（最多 2000 行） */
+  items?: { path: string; depth: number; existing: boolean }[];
 }
 
 interface EntityCommon {

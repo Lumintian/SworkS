@@ -78,6 +78,25 @@ describe('常用检索', () => {
     expect(after.problems.join()).toContain('选项已删除');
   });
 
+  it('选项合并后，常用检索里的源选项改指向目标（连同随上级并入的同名下级）', async () => {
+    t = await makeTestApp();
+    const kp = ((await t.json('GET', '/api/properties')).body as { id: string; preset: string }[]).find((d) => d.preset === 'knowledge')!;
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const src = await ensure('函数的性质');
+    await ensure('函数的性质/单调性');
+    const dst = await ensure('函数');
+    await ensure('函数/单调性');
+    await problem(t, { properties: [{ propertyId: kp.id, optionIds: [src] }] });
+    const s1 = (await save(t, '性质', '考点:函数的性质')).body;
+    const s2 = (await save(t, '单调', '考点:函数的性质/单调性 OR #无关')).body;
+    const res = await t.json('POST', '/api/property-options/merge-many', { ids: [src], intoId: dst });
+    expect(res.status).toBe(200);
+    const byId = new Map(((await t.json('GET', '/api/saved-searches')).body as { id: string; text: string; problems: string[] }[]).map((s) => [s.id, s]));
+    expect(byId.get(s1.id)).toMatchObject({ text: '考点:函数', problems: [] });
+    expect(byId.get(s2.id)).toMatchObject({ text: '考点:函数/单调性 OR #无关', problems: [] });
+    expect((await t.json('GET', '/api/saved-searches/counts?scope=problem')).body[s1.id]).toBe(1);
+  });
+
   it('备份往返保留常用检索', async () => {
     t = await makeTestApp();
     await save(t, '最近一周', '创建:7天');

@@ -1,7 +1,7 @@
 /**
  * 常用检索：保存查询的语义树（属性/选项/学生用 ID，标签用路径，日期保存原样的写法）与当时的文本。
  * 显示与打开时按当前名称重新生成文本，所以属性、选项、学生改名后依然有效；
- * 标签改名/合并/删除、学科学段改名/合并时，在同一事务里改写保存的条件（见 rewriteSavedSearches）。
+ * 标签改名/合并/删除、学科学段改名/合并、选项合并时，在同一事务里改写保存的条件（见 rewriteSavedSearches）。
  */
 import type { SavedSearchDTO, SavedSearchScope } from '../../shared/api.js';
 import { parseListFilters, type ListSort } from '../../shared/listFilters.js';
@@ -166,7 +166,7 @@ export function savedSearchCounts(db: DB, scope: SavedSearchScope): Record<strin
 }
 
 /**
- * 在当前事务里改写所有常用检索的条件（标签、字典改名/合并/删除时调用）。
+ * 在当前事务里改写所有常用检索的条件（标签、字典改名/合并/删除，选项合并时调用）。
  * 只写真正变化的行；文本按当前名称重新生成。
  */
 export function rewriteSavedSearches(db: DB, fn: (q: Q) => Q): number {

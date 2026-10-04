@@ -1,17 +1,16 @@
 /**
  * 分类管理：标签（按路径的层级）与学科/学段字典。
  * 凡是改变了题目/资料内容（标签挂接、学科/学段取值）的操作，都在同一事务内
- * 递增受影响对象的 write_version、刷新 updated_at 并重建检索投影。
+ * 递增受影响对象的 write_version、刷新 updated_at 并重建检索投影（touch.ts#makeToucher）。
  */
 import { recordCatalog } from '../events/changes.js';
 import { rewriteSavedSearches } from './savedSearches.js';
 import type { DictEntryDTO, DictKind, DictManageDTO, TagRenameResultDTO } from '../../shared/api.js';
 import { inSubtree, normalizeTagInput, splitTagPath, tagKey, TAG_SEP } from '../../shared/tagPath.js';
-import { nowIso, type DB } from '../db/connection.js';
+import type { DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
-import { bumpVersion } from './versioning.js';
-import { normalizeShortText, placeholders, type OwnerKind } from './rows.js';
-import { reindex } from './search.js';
+import { normalizeShortText, placeholders, type Owner } from './rows.js';
+import { makeToucher, type Toucher } from './touch.js';
 
 const MAX_TAG_NAME = 60;
 
@@ -31,7 +30,7 @@ function subtreeTags(db: DB, path: string): TagRow[] {
 }
 
 /** 挂着这些标签的全部对象（含回收站中的）。 */
-function ownersOfTags(db: DB, tagIds: readonly string[]): { kind: OwnerKind; id: string }[] {
+function ownersOfTags(db: DB, tagIds: readonly string[]): Owner[] {
   if (tagIds.length === 0) return [];
   const ph = placeholders(tagIds.length);
   const problems = db.prepare(`SELECT DISTINCT problem_id AS id FROM problem_tags WHERE tag_id IN (${ph})`).all(...tagIds) as {
@@ -44,25 +43,6 @@ function ownersOfTags(db: DB, tagIds: readonly string[]): { kind: OwnerKind; id:
     ...problems.map((r) => ({ kind: 'problem' as const, id: r.id })),
     ...materials.map((r) => ({ kind: 'material' as const, id: r.id })),
   ];
-}
-
-type Owner = { kind: OwnerKind; id: string };
-
-/** 同一操作里收集受影响的对象（去重），最后统一递增版本并重建检索投影，每个对象只处理一次。 */
-class OwnerSet {
-  private readonly map = new Map<string, Owner>();
-  add(owners: readonly Owner[]): void {
-    for (const o of owners) this.map.set(`${o.kind}:${o.id}`, o);
-  }
-  get size(): number {
-    return this.map.size;
-  }
-  touch(db: DB, now = nowIso()): void {
-    for (const o of this.map.values()) {
-      bumpVersion(db, o.kind, o.id, now);
-      reindex(db, o.kind, o.id);
-    }
-  }
 }
 
 /** 去掉位于其他所选路径子树内的路径（只保留最上层），并按 tagKey 去重。 */
@@ -90,15 +70,15 @@ function mergeTagInto(db: DB, fromId: string, intoId: string): void {
 export function renameTagPath(db: DB, from: string, to: string): TagRenameResultDTO {
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
-    const owners = new OwnerSet();
-    const r = renameTagPathTx(db, from, to, owners);
-    owners.touch(db);
-    return { ...r, affectedItems: owners.size };
+    const touch = makeToucher(db);
+    const r = renameTagPathTx(db, from, to, touch);
+    touch.finish();
+    return { ...r, affectedItems: touch.bumpedCount };
   })();
 }
 
-/** 改名的实际步骤（调用方负责事务与收尾）；受影响的对象加入 owners。 */
-function renameTagPathTx(db: DB, from: string, to: string, owners: OwnerSet): { renamed: number; merged: number } {
+/** 改名的实际步骤（调用方负责事务与收尾）；受影响的对象加入 touch。 */
+function renameTagPathTx(db: DB, from: string, to: string, touch: Toucher): { renamed: number; merged: number } {
   const fromSegs = splitTagPath(from);
   const toName = normalizeTagInput(to);
   if (fromSegs.length === 0 || !toName) throw new AppError('VALIDATION', '标签路径不能为空');
@@ -117,12 +97,7 @@ function renameTagPathTx(db: DB, from: string, to: string, owners: OwnerSet): { 
     });
     if (plan.every((p) => p.name === p.newName)) return { renamed: 0, merged: 0 };
 
-    owners.add(
-      ownersOfTags(
-        db,
-        plan.map((p) => p.id),
-      ),
-    );
+    for (const o of ownersOfTags(db, plan.map((p) => p.id))) touch.add(o, true);
     // 第一步：先把要改名的标签移到临时名称，避免改名途中与子树内尚未处理的旧名称冲突
     const tmp = db.prepare('UPDATE tags SET name = ? WHERE id = ?');
     for (const p of plan) tmp.run(`~tmp~${p.id}`, p.id);
@@ -164,18 +139,18 @@ export function mergeTagPaths(db: DB, from: readonly string[], to: string): TagR
   const toKey = tagKey(toName);
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
-    const owners = new OwnerSet();
+    const touch = makeToucher(db);
     let renamed = 0;
     let merged = 0;
     for (const f of topmostPaths(from)) {
       if (tagKey(f) === toKey) continue;
       if (inSubtree(toKey, tagKey(f))) throw new AppError('VALIDATION', `不能把“${f}”合并到它自己的下级`);
-      const r = renameTagPathTx(db, f, toName, owners);
+      const r = renameTagPathTx(db, f, toName, touch);
       renamed += r.renamed;
       merged += r.merged;
     }
-    owners.touch(db);
-    return { renamed, merged, affectedItems: owners.size };
+    touch.finish();
+    return { renamed, merged, affectedItems: touch.bumpedCount };
   })();
 }
 
@@ -189,7 +164,7 @@ export function moveTagPaths(db: DB, paths: readonly string[], parent: string | 
   const parentKey = tagKey(parentName);
   return db.transaction((): TagRenameResultDTO => {
     recordCatalog(db, 'tags');
-    const owners = new OwnerSet();
+    const touch = makeToucher(db);
     let renamed = 0;
     let merged = 0;
     for (const f of topmostPaths(paths)) {
@@ -197,12 +172,12 @@ export function moveTagPaths(db: DB, paths: readonly string[], parent: string | 
       const to = parentName ? `${parentName}${TAG_SEP}${last}` : last;
       if (tagKey(to) === tagKey(f)) continue;
       if (parentName && inSubtree(parentKey, tagKey(f))) throw new AppError('VALIDATION', `不能把“${f}”移到它自己的下级`);
-      const r = renameTagPathTx(db, f, to, owners);
+      const r = renameTagPathTx(db, f, to, touch);
       renamed += r.renamed;
       merged += r.merged;
     }
-    owners.touch(db);
-    return { renamed, merged, affectedItems: owners.size };
+    touch.finish();
+    return { renamed, merged, affectedItems: touch.bumpedCount };
   })();
 }
 
@@ -222,13 +197,13 @@ export function deleteTagPaths(db: DB, paths: readonly string[]): { deleted: num
     for (const p of topmostPaths(paths)) for (const t of subtreeTags(db, p)) ids.add(t.id);
     if (ids.size === 0) throw new AppError('NOT_FOUND', '标签不存在');
     const list = [...ids];
-    const owners = new OwnerSet();
-    owners.add(ownersOfTags(db, list));
+    const touch = makeToucher(db);
+    for (const o of ownersOfTags(db, list)) touch.add(o, true);
     const ph = placeholders(list.length);
     db.prepare(`DELETE FROM problem_tags WHERE tag_id IN (${ph})`).run(...list);
     db.prepare(`DELETE FROM material_tags WHERE tag_id IN (${ph})`).run(...list);
     db.prepare(`DELETE FROM tags WHERE id IN (${ph})`).run(...list);
-    owners.touch(db);
+    touch.finish();
     // 常用检索里指向已删除标签的条件：去掉该路径；一个都不剩时标为失效（显示提示）
     const gone = topmostPaths(paths).map(tagKey);
     rewriteSavedSearches(db, (q) => {
@@ -237,7 +212,7 @@ export function deleteTagPaths(db: DB, paths: readonly string[]): { deleted: num
       if (left.length === q.paths.length) return q;
       return left.length ? { k: 'tag', paths: left } : { k: 'false', reason: `标签“${q.paths.join('、')}”已删除` };
     });
-    return { deleted: list.length, affectedItems: owners.size };
+    return { deleted: list.length, affectedItems: touch.bumpedCount };
   })();
 }
 
@@ -315,15 +290,15 @@ export function renameDictValue(db: DB, kind: string, from: string, to: string |
   assertKind(kind);
   return db.transaction(() => {
     recordCatalog(db, 'dict');
-    const owners = new OwnerSet();
-    renameDictValueTx(db, kind, from, to, owners);
-    owners.touch(db);
-    return { affectedItems: owners.size };
+    const touch = makeToucher(db);
+    renameDictValueTx(db, kind, from, to, touch);
+    touch.finish();
+    return { affectedItems: touch.bumpedCount };
   })();
 }
 
-/** 改名/合并/清除的实际步骤（调用方负责事务与收尾）；改到的对象加入 owners。 */
-function renameDictValueTx(db: DB, kind: DictKind, from: string, to: string | null, owners: OwnerSet): void {
+/** 改名/合并/清除的实际步骤（调用方负责事务与收尾）；改到的对象加入 touch。 */
+function renameDictValueTx(db: DB, kind: DictKind, from: string, to: string | null, touch: Toucher): void {
   const src = requireValue(from);
   const dst = to === null ? null : requireValue(to);
   if (dst === src) return;
@@ -341,8 +316,10 @@ function renameDictValueTx(db: DB, kind: DictKind, from: string, to: string | nu
   ] as const) {
     const ids = (db.prepare(`SELECT id FROM ${table} WHERE ${kind} = ?`).all(src) as { id: string }[]).map((r) => r.id);
     const set = db.prepare(`UPDATE ${table} SET ${kind} = ? WHERE id = ?`);
-    for (const id of ids) set.run(dst, id);
-    owners.add(ids.map((id) => ({ kind: ownerKind, id })));
+    for (const id of ids) {
+      set.run(dst, id);
+      touch.add({ kind: ownerKind, id }, true);
+    }
     affected += ids.length;
   }
   if (!srcEntry && affected === 0) throw new AppError('NOT_FOUND', `没有“${src}”这个值`);
@@ -359,10 +336,10 @@ export function mergeDictValues(db: DB, kind: string, values: readonly string[],
   assertKind(kind);
   return db.transaction(() => {
     recordCatalog(db, 'dict');
-    const owners = new OwnerSet();
-    for (const v of new Set(values)) renameDictValueTx(db, kind, v, into, owners);
-    owners.touch(db);
-    return { affectedItems: owners.size };
+    const touch = makeToucher(db);
+    for (const v of new Set(values)) renameDictValueTx(db, kind, v, into, touch);
+    touch.finish();
+    return { affectedItems: touch.bumpedCount };
   })();
 }
 

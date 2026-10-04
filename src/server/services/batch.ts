@@ -10,7 +10,7 @@ import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { getEntityRow, resolveTagIds, setDeletedTx } from './entities.js';
 import { bumpVersion } from './versioning.js';
-import { applyPropertyOp } from './properties.js';
+import { applyPropertyOp, optionIndex, type OptionIndex } from './properties.js';
 import { normalizeShortText, ownerColumn, ownerTable, placeholders, tagTable, type EntityRow, type OwnerKind } from './rows.js';
 import { reindex } from './search.js';
 
@@ -45,9 +45,11 @@ export function runBatch(db: DB, kind: OwnerKind, ids: readonly string[], action
     });
     const table = ownerTable(kind);
     const col = ownerColumn(kind);
+    // 批量操作不改选项树：整批共用一份选项路径表，不必每个对象都重读
+    let idx: OptionIndex | undefined;
     const touch = (id: string, reindexNeeded: boolean) => {
       bumpVersion(db, kind, id, now);
-      if (reindexNeeded) reindex(db, kind, id);
+      if (reindexNeeded) reindex(db, kind, id, (idx ??= optionIndex(db)));
       changed.push(id);
     };
 

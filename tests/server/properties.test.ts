@@ -406,4 +406,19 @@ describe('选项的多选批量操作', () => {
     const found = await t.json('GET', `/api/problems?q=${encodeURIComponent('代数/方程')}`);
     expect(found.body.total).toBe(1);
   });
+  it('同一对象同时带有多个源选项时一起合并：检索投影只剩目标，不留被合并掉的选项', async () => {
+    t = await makeTestApp();
+    const kp = await preset(t, 'knowledge');
+    const ensure = async (p: string) => (await t!.json('POST', `/api/properties/${kp.id}/options/ensure-path`, { path: p })).body.optionId as string;
+    const a = await ensure('单调性');
+    const b = await ensure('单调区间');
+    const c = await ensure('函数的单调');
+    const p = await create(t, { properties: [{ propertyId: kp.id, optionIds: [a, b] }] });
+    const res = await t.json('POST', '/api/property-options/merge-many', { ids: [a, b], intoId: c });
+    expect(res.body).toEqual({ merged: 2, affectedItems: 1 });
+    expect(version(t, p.id)).toBe(2);
+    const indexed = (t.lib.db.prepare("SELECT text FROM search_index WHERE owner_id = ? AND field = 'property'").all(p.id) as { text: string }[]).map((r) => r.text);
+    expect(indexed).toEqual(['函数的单调']);
+    expect((await t.json('GET', `/api/problems?q=${encodeURIComponent('单调区间')}`)).body.total).toBe(0);
+  });
 });

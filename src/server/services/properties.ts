@@ -14,6 +14,7 @@ import { PROPERTY_PRESETS, RESERVED_PROPERTY_NAMES, type PropertyPreset, type Pr
 import { nowIso, type DB } from '../db/connection.js';
 import { AppError } from '../errors.js';
 import { ownerColumn, placeholders, type Owner, type OwnerKind } from './rows.js';
+import type { Toucher } from './touch.js';
 
 // ---------------------------------------------------------------- 行类型
 
@@ -397,8 +398,11 @@ function ownersOfProperty(db: DB, propertyId: string): Owner[] {
   return rows.map((r) => (r.problem_id ? { kind: 'problem', id: r.problem_id } : { kind: 'material', id: r.material_id! }));
 }
 
-/** 由调用方提供：递增版本（可选）并重建检索投影。避免与 entities/search 形成循环依赖。 */
-export type TouchOwner = (owner: Owner, bump: boolean) => void;
+/**
+ * 管理操作的收尾由调用方提供（touch.ts#makeToucher）：收集受影响的对象，事务结束前 finish() 统一
+ * 递增版本（按需）、重建检索投影。由调用方传入是为了避免与 entities/search 形成循环依赖。
+ */
+export type { Toucher } from './touch.js';
 
 // ---------------------------------------------------------------- 属性定义管理
 
@@ -444,7 +448,7 @@ export function updatePropertyDef(
     appliesMaterial?: boolean | undefined;
     nested?: boolean | undefined;
   },
-  touch: TouchOwner,
+  touch: Toucher,
 ): PropertyDefDTO {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
@@ -472,13 +476,14 @@ export function updatePropertyDef(
       d.id,
     );
     // 适用范围变化会让部分取值冻结或恢复：只重建检索投影，内容版本不变
-    if (ap !== (d.applies_problem === 1) || am !== (d.applies_material === 1)) for (const o of ownersOfProperty(db, d.id)) touch(o, false);
+    if (ap !== (d.applies_problem === 1) || am !== (d.applies_material === 1)) for (const o of ownersOfProperty(db, d.id)) touch.add(o, false);
+    touch.finish();
     return getPropertyDef(db, d.id);
   })();
 }
 
 /** 归档（或取消归档）属性：取值冻结保留，不出现在编辑页、导航与检索中。预置属性不能归档，只能隐藏。 */
-export function setPropertyArchived(db: DB, id: string, archived: boolean, touch: TouchOwner): PropertyDefDTO {
+export function setPropertyArchived(db: DB, id: string, archived: boolean, touch: Toucher): PropertyDefDTO {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const d = getDef(db, id);
@@ -486,7 +491,8 @@ export function setPropertyArchived(db: DB, id: string, archived: boolean, touch
     if ((d.archived_at !== null) === archived) return getPropertyDef(db, d.id);
     if (!archived) validateName(db, d.name, d.id);
     db.prepare('UPDATE property_defs SET archived_at = ?, updated_at = ? WHERE id = ?').run(archived ? nowIso() : null, nowIso(), d.id);
-    for (const o of ownersOfProperty(db, d.id)) touch(o, false);
+    for (const o of ownersOfProperty(db, d.id)) touch.add(o, false);
+    touch.finish();
     return getPropertyDef(db, d.id);
   })();
 }
@@ -584,7 +590,7 @@ export function ensureOptionPath(db: DB, propertyId: string, path: string): stri
   })();
 }
 
-export function renameOption(db: DB, optionId: string, rawLabel: string, touch: TouchOwner): PropertyDefDTO {
+export function renameOption(db: DB, optionId: string, rawLabel: string, touch: Toucher): PropertyDefDTO {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const o = getOption(db, optionId);
@@ -593,12 +599,13 @@ export function renameOption(db: DB, optionId: string, rawLabel: string, touch: 
     if (siblingByLabel(db, o.property_id, o.parent_id, label, o.id)) throw new AppError('CONFLICT', `同一层级下已有“${label}”，可以改用合并`);
     db.prepare('UPDATE property_options SET label = ?, updated_at = ? WHERE id = ?').run(label, nowIso(), o.id);
     // 选项按 ID 保存：只需重建子树内取值对象的检索投影
-    for (const owner of ownersOfOptions(db, optionSubtree(optionTreeOf(db, o.property_id), o.id))) touch(owner, false);
+    for (const owner of ownersOfOptions(db, optionSubtree(optionTreeOf(db, o.property_id), o.id))) touch.add(owner, false);
+    touch.finish();
     return getPropertyDef(db, o.property_id);
   })();
 }
 
-export function moveOption(db: DB, optionId: string, parentIdRaw: string | null, index: number | undefined, touch: TouchOwner): PropertyDefDTO {
+export function moveOption(db: DB, optionId: string, parentIdRaw: string | null, index: number | undefined, touch: Toucher): PropertyDefDTO {
   return moveOptions(db, [optionId], parentIdRaw, index, touch);
 }
 
@@ -607,7 +614,7 @@ export function moveOption(db: DB, optionId: string, parentIdRaw: string | null,
  * 被其他所选项包含的后代跟着上级一起走，不单独移动。index 按“去掉这些选项后”的同级列表计算，省略表示放到最后。
  * 选项按 ID 保存，移动只重建检索投影（路径变了），不递增版本。
  */
-export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: string | null, index: number | undefined, touch: TouchOwner): PropertyDefDTO {
+export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: string | null, index: number | undefined, touch: Toucher): PropertyDefDTO {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const opts = [...new Set(optionIds.map((x) => x.toLowerCase()))].map((id) => getOption(db, id));
@@ -646,19 +653,20 @@ export function moveOptions(db: DB, optionIds: readonly string[], parentIdRaw: s
     const setPos = db.prepare('UPDATE property_options SET position = ? WHERE id = ?');
     siblings.forEach((id, i) => setPos.run(i, id));
     for (const o of moving) {
-      if (parentId !== o.parent_id) for (const owner of ownersOfOptions(db, optionSubtree(tree, o.id))) touch(owner, false);
+      if (parentId !== o.parent_id) for (const owner of ownersOfOptions(db, optionSubtree(tree, o.id))) touch.add(owner, false);
     }
+    touch.finish();
     return getPropertyDef(db, d.id);
   })();
 }
 
 /** 删除选项（含子树）：选项软删除，对象上的这些取值移除（递增版本）。 */
-export function deleteOption(db: DB, optionId: string, touch: TouchOwner): { deleted: number; affectedItems: number } {
+export function deleteOption(db: DB, optionId: string, touch: Toucher): { deleted: number; affectedItems: number } {
   return deleteOptions(db, [optionId], touch);
 }
 
 /** 一次删除多个选项（各含子树，可跨属性）：子树取并集，一个事务，每个对象只递增一次版本。 */
-export function deleteOptions(db: DB, optionIds: readonly string[], touch: TouchOwner): { deleted: number; affectedItems: number } {
+export function deleteOptions(db: DB, optionIds: readonly string[], touch: Toucher): { deleted: number; affectedItems: number } {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const ids = new Set<string>();
@@ -679,64 +687,66 @@ export function deleteOptions(db: DB, optionIds: readonly string[], touch: Touch
     const now = nowIso();
     db.prepare(`DELETE FROM property_values WHERE option_id IN (${ph})`).run(...list);
     db.prepare(`UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id IN (${ph})`).run(now, now, ...list);
-    for (const owner of owners) touch(owner, true);
+    for (const owner of owners) touch.add(owner, true);
+    touch.finish();
     return { deleted: list.length, affectedItems: owners.length };
   })();
 }
 
 /**
  * 合并选项：source 上的取值转到 target（已有的不重复），source 的下级移到 target 下
- * （同名下级继续合并），然后软删除 source。
+ * （同名下级继续合并），然后软删除 source。常用检索里的 source 改指向 target。
  */
-export function mergeOption(db: DB, sourceId: string, targetId: string, touch: TouchOwner): { affectedItems: number } {
+export function mergeOption(db: DB, sourceId: string, targetId: string, touch: Toucher): { affectedItems: number } {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
-    const src = getOption(db, sourceId);
-    const dst = getOption(db, targetId);
-    if (src.id === dst.id) return { affectedItems: 0 };
-    if (src.property_id !== dst.property_id) throw new AppError('VALIDATION', '只能合并同一属性的选项');
-    const def = getDef(db, src.property_id);
-    const tree = optionTreeOf(db, def.id);
-    if (optionSubtree(tree, src.id).includes(dst.id)) throw new AppError('VALIDATION', '不能合并到自己的下级');
-    const reindexOnly = new Map<string, Owner>();
-    const bumped = new Map<string, Owner>();
-    const key = (o: Owner) => `${o.kind}:${o.id}`;
-    for (const o of ownersOfOptions(db, optionSubtree(tree, src.id))) reindexOnly.set(key(o), o);
-    const now = nowIso();
-    const mergeInto = (s: OptionRow, t: OptionRow) => {
-      for (const kind of ['problem', 'material'] as const) {
-        const col = ownerColumn(kind);
-        const owners = (db.prepare(`SELECT ${col} AS id FROM property_values WHERE option_id = ? AND ${col} IS NOT NULL`).all(s.id) as { id: string }[]).map((r) => r.id);
-        for (const id of owners) {
-          const has = db.prepare(`SELECT 1 FROM property_values WHERE ${col} = ? AND option_id = ?`).get(id, t.id);
-          if (has) db.prepare(`DELETE FROM property_values WHERE ${col} = ? AND option_id = ?`).run(id, s.id);
-          else db.prepare(`UPDATE property_values SET option_id = ? WHERE ${col} = ? AND option_id = ?`).run(t.id, id, s.id);
-          bumped.set(`${kind}:${id}`, { kind, id });
-        }
-      }
-      for (const child of db.prepare('SELECT * FROM property_options WHERE parent_id = ? AND deleted_at IS NULL').all(s.id) as OptionRow[]) {
-        const clash = siblingByLabel(db, def.id, t.id, child.label);
-        if (clash) mergeInto(child, clash);
-        else db.prepare('UPDATE property_options SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?').run(t.id, nextPosition(db, def.id, t.id), now, child.id);
-      }
-      db.prepare('UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, s.id);
-    };
-    mergeInto(src, dst);
-    // 单选属性：同一对象不可能同时有 source 与 target，上面的更新即可
-    for (const [k, o] of bumped) {
-      touch(o, true);
-      reindexOnly.delete(k);
-    }
-    for (const o of reindexOnly.values()) touch(o, false);
-    return { affectedItems: bumped.size };
+    const affected = mergeOptionTx(db, getOption(db, sourceId), getOption(db, targetId), touch);
+    touch.finish();
+    return { affectedItems: affected.size };
   })();
+}
+
+/** 合并的实际步骤（调用方负责事务与 finish）；返回取值被改动的对象（kind:id）。 */
+function mergeOptionTx(db: DB, src: OptionRow, dst: OptionRow, touch: Toucher): Set<string> {
+  const bumped = new Set<string>();
+  if (src.id === dst.id) return bumped;
+  if (src.property_id !== dst.property_id) throw new AppError('VALIDATION', '只能合并同一属性的选项');
+  const def = getDef(db, src.property_id);
+  const tree = optionTreeOf(db, def.id);
+  if (optionSubtree(tree, src.id).includes(dst.id)) throw new AppError('VALIDATION', '不能合并到自己的下级');
+  // 子树里的选项路径会变：用到它们的对象至少要重建检索投影
+  for (const o of ownersOfOptions(db, optionSubtree(tree, src.id))) touch.add(o, false);
+  const now = nowIso();
+  const mergeInto = (s: OptionRow, t: OptionRow) => {
+    for (const kind of ['problem', 'material'] as const) {
+      const col = ownerColumn(kind);
+      const owners = (db.prepare(`SELECT ${col} AS id FROM property_values WHERE option_id = ? AND ${col} IS NOT NULL`).all(s.id) as { id: string }[]).map((r) => r.id);
+      for (const id of owners) {
+        const has = db.prepare(`SELECT 1 FROM property_values WHERE ${col} = ? AND option_id = ?`).get(id, t.id);
+        if (has) db.prepare(`DELETE FROM property_values WHERE ${col} = ? AND option_id = ?`).run(id, s.id);
+        else db.prepare(`UPDATE property_values SET option_id = ? WHERE ${col} = ? AND option_id = ?`).run(t.id, id, s.id);
+        touch.add({ kind, id }, true);
+        bumped.add(`${kind}:${id}`);
+      }
+    }
+    for (const child of db.prepare('SELECT * FROM property_options WHERE parent_id = ? AND deleted_at IS NULL').all(s.id) as OptionRow[]) {
+      const clash = siblingByLabel(db, def.id, t.id, child.label);
+      if (clash) mergeInto(child, clash);
+      else db.prepare('UPDATE property_options SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?').run(t.id, nextPosition(db, def.id, t.id), now, child.id);
+    }
+    db.prepare('UPDATE property_options SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, s.id);
+    touch.optionMerged(s.id, t.id);
+  };
+  // 单选属性：同一对象不可能同时有 source 与 target，上面的更新即可
+  mergeInto(src, dst);
+  return bumped;
 }
 
 /**
  * 把多个选项合并到同一个目标：先整体校验（同一属性、目标不在任何源的子树内），再逐个合并；
- * 源的上级也被选中时随上级一起合并。一个事务，每个对象只递增一次版本。
+ * 源的上级也被选中时随上级一起合并。一个事务，每个对象只递增一次版本，最后统一重建检索投影。
  */
-export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: string, touch: TouchOwner): { merged: number; affectedItems: number } {
+export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: string, touch: Toucher): { merged: number; affectedItems: number } {
   return db.transaction(() => {
     recordCatalog(db, 'properties');
     const dst = getOption(db, targetId);
@@ -751,13 +761,10 @@ export function mergeOptions(db: DB, sourceIds: readonly string[], targetId: str
       for (let p = s.parent_id; p; p = tree.byId.get(p)?.parentId ?? null) if (selected.has(p)) return false;
       return true;
     });
-    const bumped = new Set<string>();
-    const counting: TouchOwner = (o, bump) => {
-      if (bump) bumped.add(`${o.kind}:${o.id}`);
-      touch(o, bump);
-    };
-    for (const s of topmost) mergeOption(db, s.id, dst.id, counting);
-    return { merged: topmost.length, affectedItems: bumped.size };
+    const affected = new Set<string>();
+    for (const s of topmost) for (const k of mergeOptionTx(db, getOption(db, s.id), getOption(db, dst.id), touch)) affected.add(k);
+    touch.finish();
+    return { merged: topmost.length, affectedItems: affected.size };
   })();
 }
 

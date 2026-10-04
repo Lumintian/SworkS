@@ -278,6 +278,24 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-semibold text-stone">选项</h3>
+        <span className="flex-1" />
+        <button type="button" className="btn btn-ghost btn-sm" disabled={def.options.length === 0} onClick={() => void copyOutline()}>
+          <ClipboardCopy size={14} /> 复制为大纲
+        </button>
+        <button type="button" className="btn btn-sage btn-sm" onClick={() => setImporting(true)}>
+          <FileInput size={14} /> 导入大纲
+        </button>
+        <ManageHelp
+          title={`${def.name}的选项`}
+          tips={[
+            ...treeTips({ drag: '拖动调整顺序；拖到另一个选项上，即成为它的下级' }),
+            '选项改名、移动不会改动题目内容，也不改变题目的修改时间；删除或合并会同步修改用到它们的题目',
+            '需要下级时，选中一个选项点“新建下级”，或把选项拖到另一个选项上',
+          ]}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <button type="button" className="btn btn-sm" onClick={() => void add(null)}>
           <Plus size={14} /> 新建{hasChildren ? '顶级' : ''}选项
         </button>
@@ -302,20 +320,6 @@ export function OptionTreeEditor({ def }: { def: PropertyDefDTO }) {
         <button type="button" className="btn btn-ghost btn-sm hover:!text-terracotta" disabled={selectedOptions.length === 0} onClick={() => void remove(selectedOptions)}>
           <Trash2 size={14} /> 删除{selectedOptions.length > 1 ? ` ${selectedOptions.length} 项` : ''}
         </button>
-        <button type="button" className="btn btn-ghost btn-sm ml-auto" disabled={def.options.length === 0} onClick={() => void copyOutline()}>
-          <ClipboardCopy size={14} /> 复制为大纲
-        </button>
-        <button type="button" className="btn btn-sage btn-sm" onClick={() => setImporting(true)}>
-          <FileInput size={14} /> 导入大纲
-        </button>
-        <ManageHelp
-          title={`${def.name}的选项`}
-          tips={[
-            ...treeTips({ drag: '拖动调整顺序；拖到另一个选项上，即成为它的下级' }),
-            '选项改名、移动不会改动题目内容，也不改变题目的修改时间；删除或合并会同步修改用到它们的题目',
-            '需要下级时，选中一个选项点“新建下级”，或把选项拖到另一个选项上',
-          ]}
-        />
       </div>
       {def.nested ? (
         <p className="flex flex-wrap items-center gap-x-2 text-xs text-ink-faint">

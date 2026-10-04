@@ -75,11 +75,10 @@ test('选项树多选删除；属性列表右键菜单', async ({ page }) => {
   const id = await seed(server, '选择题', { properties: [{ propertyId: qt.id, optionIds: [opt('单选')] }] });
   const before = (await apiGet(server, `/api/problems/${id}`)).version;
 
-  await page.goto(`${server.url}/manage?tab=properties`);
+  await page.goto(`${server.url}/manage`);
   const list = page.getByRole('list', { name: '属性列表' });
-  // 右键属性 → 编辑选项
-  await list.getByRole('listitem').filter({ hasText: qt.name }).first().click({ button: 'right', position: { x: 8, y: 8 } });
-  await page.getByRole('menuitem', { name: '编辑选项' }).click();
+  // 左边点属性 → 右边是它的选项树
+  await list.getByRole('button', { name: new RegExp(`^${qt.name}`) }).click();
   const tree = page.getByRole('tree', { name: `${qt.name}选项树` });
   await tree.getByRole('treeitem', { name: '单选', exact: true }).click();
   await tree.getByRole('treeitem', { name: '多选', exact: true }).click({ modifiers: ['ControlOrMeta'] });
@@ -92,12 +91,40 @@ test('选项树多选删除；属性列表右键菜单', async ({ page }) => {
   expect(after.properties).toEqual([]);
   expect(after.version).toBe(before + 1);
 
-  // 右键 → 改名
-  await list.getByRole('listitem').filter({ hasText: '难度' }).first().click({ button: 'right', position: { x: 8, y: 8 } });
+  // 右键 → 改名（右边的标题变成输入框）
+  await list.getByRole('button', { name: /^难度/ }).click({ button: 'right' });
   await page.getByRole('menuitem', { name: '改名' }).click();
   await page.getByLabel('属性新名称').fill('难易度');
   await page.getByLabel('属性新名称').press('Enter');
   await expect(list).toContainText('难易度');
+  await expect(page.getByRole('heading', { name: '难易度' })).toBeVisible();
+
+  // 右键 → 下移：顺序保存到服务端
+  await list.getByRole('button', { name: /^难易度/ }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '下移' }).click();
+  await expect.poll(async () => ((await apiGet(server!, '/api/properties')) as { name: string }[]).map((d) => d.name)).toEqual([qt.name, '考点', '难易度']);
+  await expect(list.getByRole('button', { name: /^(题型|考点|难易度)/ })).toHaveText([/^题型/, /^考点/, /^难易度/]);
+});
+
+test('数据管理：新建属性后右边直接显示它；已归档的属性收在左边最下面，可以取消归档', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  await page.goto(`${server.url}/manage?tab=tags`);
+  await expect(page.getByRole('heading', { name: '标签', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新建属性' }).click();
+  const dialog = page.getByRole('dialog', { name: '新建属性' });
+  await dialog.getByLabel('名称').fill('年份');
+  await dialog.getByRole('radio', { name: /^数字/ }).check();
+  await dialog.getByRole('button', { name: '新建' }).click();
+  await expect(page.getByRole('heading', { name: '年份' })).toBeVisible();
+  await expect(page.getByText('还没有题目或资料设置它')).toBeVisible();
+
+  await page.getByRole('button', { name: '“年份”的更多操作' }).click();
+  await page.getByRole('menuitem', { name: '归档' }).click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByText('已归档：不出现在题目页、左侧栏和检索中')).toBeVisible();
+  await expect(page.getByRole('list', { name: '已归档的属性' })).toContainText('年份');
+  await page.getByRole('button', { name: '取消归档' }).click();
+  await expect(page.getByRole('list', { name: '属性列表' })).toContainText('年份');
 });
 
 test('标签：移到顶层会合并同名标签时先确认；提示里的“撤销”把两个标签换回来', async ({ page }) => {
@@ -218,8 +245,8 @@ test('属性改类型：文本改为单选前先预览影响；提示里可以�
   const a = await seed(server, '甲', { properties: [{ propertyId: pid, text: '人教版' }] });
   await seed(server, '乙', { properties: [{ propertyId: pid, text: '北师大版' }] });
 
-  await page.goto(`${server.url}/manage?tab=properties`);
-  await page.getByRole('list', { name: '属性列表' }).getByRole('listitem').filter({ hasText: '出处' }).getByRole('button', { name: '改类型' }).click();
+  await page.goto(`${server.url}/manage?item=${pid}`);
+  await page.getByRole('button', { name: '改类型' }).click();
   const dialog = page.getByRole('dialog', { name: '修改“出处”的类型' });
   await dialog.getByRole('radio', { name: /^数字/ }).check();
   await expect(dialog.getByRole('status')).toContainText('不是数字');

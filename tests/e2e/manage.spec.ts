@@ -99,3 +99,76 @@ test('选项树多选删除；属性列表右键菜单', async ({ page }) => {
   await page.getByLabel('属性新名称').press('Enter');
   await expect(list).toContainText('难易度');
 });
+
+test('标签：移到顶层会合并同名标签时先确认；提示里的“撤销”把两个标签换回来', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const a = await seed(server, '甲', { tags: ['几何/圆'] });
+  const b = await seed(server, '乙', { tags: ['圆'] });
+
+  await page.goto(`${server.url}/manage?tab=tags`);
+  const tree = page.getByRole('tree', { name: '标签树', exact: true });
+  // 两个“圆”：“几何”下的排在前面，顶层的在后面
+  await tree.getByRole('treeitem', { name: '圆', exact: true }).nth(0).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '移到顶层' }).click();
+  await expect(page.getByRole('heading', { name: '移动后会合并同名标签' })).toBeVisible();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByText(/已移动：改名 0 个、合并 1 个标签，影响 1 项/)).toBeVisible();
+  expect((await apiGet(server, `/api/problems/${a}`)).tags).toEqual(['圆']);
+
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect(page.getByText('已撤销，影响 1 项')).toBeVisible();
+  expect((await apiGet(server, `/api/problems/${a}`)).tags).toEqual(['几何/圆']);
+  expect((await apiGet(server, `/api/problems/${b}`)).tags).toEqual(['圆']);
+});
+
+test('选项树：显示使用次数；按路径过滤后 ⌘/Ctrl+A 只选匹配项；大纲导入先预览', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const defs = (await apiGet(server, '/api/properties')) as { id: string; preset: string; name: string }[];
+  const kp = defs.find((d) => d.preset === 'knowledge')!;
+
+  await page.goto(`${server.url}/manage?tab=properties`);
+  await page.getByRole('button', { name: '导入大纲' }).click();
+  await page.getByLabel('大纲内容').fill('# 函数\n- 单调性\n- 奇偶性\n# 数列\n- 单调数列');
+  const preview = page.getByRole('region', { name: '导入预览' });
+  await expect(preview).toContainText('将新建 5 个');
+  await page.getByRole('button', { name: '导入（新建 5 个）' }).click();
+
+  const opts = (await apiGet(server, `/api/properties/${kp.id}`)).options as { id: string; path: string }[];
+  await seed(server, '用到单调性', { properties: [{ propertyId: kp.id, optionIds: [opts.find((o) => o.path === '函数/单调性')!.id] }] });
+  const tree = page.getByRole('tree', { name: `${kp.name}选项树` });
+  await expect(tree.getByRole('treeitem', { name: '函数', exact: true })).toContainText('1 道题');
+
+  await page.getByLabel(`过滤${kp.name}选项树`).fill('单调');
+  await expect(tree.getByRole('treeitem')).toHaveCount(4);
+  await tree.getByRole('treeitem', { name: '单调性', exact: true }).click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await expect(tree.getByRole('treeitem', { name: '单调性', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(tree.getByRole('treeitem', { name: '单调数列', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(tree.getByRole('treeitem', { name: '函数', exact: true })).toHaveAttribute('aria-selected', 'false');
+});
+
+test('学科：只差全角半角的值提示合并；只有回收站里在用的值可以清除', async ({ page }) => {
+  server = await startServer(path.join(tempDir(), 'data'));
+  const a = await seed(server, '一', { subject: 'IB数学' });
+  const b = await seed(server, '二', { subject: 'ＩＢ数学' });
+  const gone = await seed(server, '三', { subject: '天文' });
+  const session = (await apiGet(server, '/api/session')) as { csrfToken: string };
+  await fetch(`${server.url}/api/problems/${gone}`, { method: 'DELETE', headers: { 'x-sworks-csrf': session.csrfToken, origin: server.url } });
+
+  await page.goto(`${server.url}/manage?tab=subject`);
+  const hint = page.getByRole('note', { name: '疑似重复' });
+  await expect(hint).toContainText('1 组名称疑似重复');
+  await hint.getByRole('button', { name: /合并为/ }).click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByText(/已合并，影响 1 项/)).toBeVisible();
+  expect((await apiGet(server, `/api/problems/${b}`)).subject).toBe((await apiGet(server, `/api/problems/${a}`)).subject);
+
+  const tree = page.getByRole('tree', { name: '学科列表', exact: true });
+  const item = tree.getByRole('treeitem', { name: '天文', exact: true });
+  await expect(item).toContainText('回收站中 1 项');
+  await item.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '从所有对象上清除' }).click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByText(/已清除，影响 1 项/)).toBeVisible();
+  await expect(item).toHaveCount(0);
+});

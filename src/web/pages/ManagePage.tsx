@@ -312,7 +312,9 @@ function TagsTab({ data }: { data: TagManageDTO }) {
     });
     if (!ok) return;
     try {
-      report(await sendJSON<TagRenameResultDTO>('POST', '/api/tags/rename', { from: n.path, to }), '已改名');
+      const r = await sendJSON<TagRenameResultDTO>('POST', '/api/tags/rename', { from: n.path, to });
+      invalidateWrites();
+      undoToast(`已改名 ${r.renamed} 个、合并 ${r.merged} 个标签，影响 ${r.affectedItems} 项`, r.undoId);
       setSelected([tagKey(to)]);
     } catch (err) {
       toast(errorMessage(err), 'error');
